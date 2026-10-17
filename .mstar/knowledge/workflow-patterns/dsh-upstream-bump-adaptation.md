@@ -5,7 +5,7 @@ problem_type: workflow_issue
 category: workflow-patterns
 severity: medium
 title: Adapting a dsh plugin bundle to an upstream dsh bump — contract migration, probe discriminators, restart verification
-description: Verified process for surviving a dsh staging-snapshot upgrade: key file/runtime probes on semantic discriminators with present/absent directions, migrate the dshClient → dsh.client declaration (no fallback, negative-verdict cache), restart + re-verify the runtime. The plugin-shipped host patch mechanism (which had to be regenerated per bump) is retired; the settings exposure boundary has NO upstream opt-in (verified at pristine 20da39e) — the web section is notice-only and configuration flows through the plugin config row. Never verify host capabilities against a locally-modified host tree (circular verification).
+description: Verified process for surviving a dsh staging-snapshot upgrade: key file/runtime probes on semantic discriminators with present/absent directions, migrate the dshClient → dsh.client declaration (no fallback, negative-verdict cache), restart + re-verify the runtime. The plugin-shipped host patch mechanism (which had to be regenerated per bump) is retired; the settings exposure boundary has NO upstream opt-in (verified at pristine 20da39e) — the web section is notice-only and configuration flows through the plugin config row. Never verify host capabilities against a locally-modified host tree (circular verification). Includes a CI-first triage for a version bump: lockfile-exemption drift (peer-suffix stripping, both-direction diff), a newly required `Service.inject` member making a service silently absent, optional-to-required identity parameters at every call site, and separating src damage from test damage.
 tags:
   - dsh
   - upstream-bump
@@ -58,6 +58,30 @@ Every artifact that mirrors an upstream shape (the client declaration, verify pr
 ## When to Apply
 
 Any dsh plugin bundle that ships a client half, immediately after a `$DSH_HOME` staging snapshot upgrade. Host-side settings exposure needs no patch and has no upstream opt-in — the web section talks through the GatewayService RPC channel (`/api/<ns>/<method>`), which is not allowlist-gated (see the settings exposure boundary knowledge doc).
+
+## Bundle-side triage after a version bump (CI-first)
+
+Once the peers are bumped, three failure classes dominate and each has a mechanical first probe. Run the CI job's own commands locally before editing anything.
+
+### 1. The exemption list must mirror the lockfile, not another repo's manifest
+
+A frozen-lockfile install enforces the supply-chain policy: anything resolved inside the release-age window is rejected (`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`) unless `pnpm-workspace.yaml` exempts that exact `name@version`. The mechanical sync procedure (re-resolve, diff, add the new transitive peers) lives in the peer-bump checklist (`dsh-peer-only-bump-checklist.md` §3). Three traps it does not cover:
+
+- **Strip peer suffixes before comparing.** Lockfile `packages` keys read `name@version(peer@version)(...)` while exemption entries do not; without stripping, the comparison invents ~2 false "missing" entries per peer-carrying package and the "sets are identical" check never converges.
+- **Diff in both directions.** An entry may name a version the lockfile does not resolve at all — copied from another repo's manifest, or left behind when a peer resolution kept an older version (`cordis-plugin-include` resolved to `1.0.9` while the exemption claimed `1.0.10`). Missing entries break CI; extra entries silently contradict the list's own lockfile-SSOT rule.
+- **Reproduce the CI step locally first.** `pnpm install --frozen-lockfile` names the exact offending `name@version`, which beats reasoning about a hand-maintained list.
+
+### 2. An upstream `Service.inject` addition makes the service silently absent
+
+When upstream adds a required injection member, a minimal test context that mounts only the old dependencies stops activating the service. The symptom is not an error at the mount call: `ctx.<service>` is simply `undefined`, and everything downstream never runs (an interceptor is never installed, a channel never set). Probe: read the installed `static inject` list on the service class, then `ctx.provide(...)` a minimal double for each new member. Keep the double fail-closed — a permissive stub hides a genuine unexpected call.
+
+### 3. Optional-to-required identity parameters break every direct call site
+
+A parameter promoted from optional (with an in-process fallback) to required fails typecheck at each call site and changes the carrier shape too (`ConnectionRpcHandler` gained a 4th `peer` argument). Type the test double against the installed upstream signature rather than a hand-written one, so a future arity change fails at the double instead of silently at runtime.
+
+### 4. Separate src damage from test damage before editing
+
+Run the src-only program (`pnpm build`) first. When it passes while `pnpm typecheck` fails, the breakage is confined to the test surface — do not touch production code. Always run the client/spec tsconfig programs separately as well, because the composite command aborts at the first failing program and hides the rest.
 
 ## Examples
 
