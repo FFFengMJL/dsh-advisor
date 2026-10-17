@@ -48,10 +48,11 @@ describe('registry peer contract (dsh line from npm, no link farm)', () => {
   })
 
   it('uses the scoped schemastery peer supplied by the dsh line', () => {
-    // ^3.18.4 is the floor the volatile live fields need (`.volatile()` —
-    // Schema meta `volatile` + resolve-to-reference — landed in 3.18.4; the
-    // 0.1.7-rc.1 dsh packages embed exactly that version).
-    expect(root.peerDependencies?.['@deepseek-ai/schemastery']).toBe('^3.18.4')
+    // ^3.18.5 tracks what the 0.2.1-rc.1 dsh line supplies (`~3.18.5` in
+    // dsh-api-gateway); 3.18.4 is the floor the volatile live fields need
+    // (`.volatile()` — Schema meta `volatile` + resolve-to-reference — landed
+    // there).
+    expect(root.peerDependencies?.['@deepseek-ai/schemastery']).toBe('^3.18.5')
     expect(root.peerDependencies?.schemastery).toBeUndefined()
     expect(root.devDependencies?.schemastery).toBeUndefined()
   })
