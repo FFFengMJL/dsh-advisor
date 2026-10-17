@@ -43,12 +43,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { MemoryEntryConfig, harnessAdvisorPlugin } from './support/memory-settings'
+import { ownerPeer, provideRemoteAccess } from './support/typert-gateway'
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { installAdvisorSettings } from '../src/settings'
 import { AdvisorConfigGateway, advisorTypertContribution } from '../src/gateway'
 import { resolveAdvisorConfig } from '../src/config'
 import type { AdvisorConfig, ResolvedAdvisorConfig } from '../src/config'
+import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
 
 // n4 QC F-6: the single-reviewer guard is process-global; the composed test
 // mounts the real plugin, so the flag must reset between cases.
@@ -430,16 +432,19 @@ type FakeRpcResult =
   | { readonly ok: true; readonly value: unknown }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string; readonly details: object } }
 
-type FakeRpcHandler = (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<FakeRpcResult>
+type FakeRpcHandler = (endpoint: string, payload: unknown, signal: AbortSignal, peer: PeerScope) => Promise<FakeRpcResult>
 
 /** Records the `/api` interceptor the typertGateway mounts (alpha.2 `HostConnectionRpc.intercept` shape). */
 class FakeConnectionService extends Service {
   channel: string | undefined
   matches: ((endpoint: string) => boolean) | undefined
   handler: FakeRpcHandler | undefined
+  /** The owner Peer this carrier admits; 0.2.1 requires every intercepted call to name one. */
+  readonly peer: PeerScope
 
   constructor(ctx: Context) {
     super(ctx, 'connection')
+    this.peer = ownerPeer(ctx)
   }
 
   get rpc() {
@@ -470,6 +475,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     await ctx.plugin(TypertRegistry)
     await ctx.plugin(FakeConnectionService)
     await ctx.plugin(TypertGatewayService)
+    provideRemoteAccess(ctx)
     // Entry values a seed would have pinned pre-load (the pre-0.1.7 user
     // layer) now ride the entry config itself: the harness hands the plugin
     // its already-resolved volatile references.
@@ -506,7 +512,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     const { connection } = await composeGatewayHarness()
     const signal = new AbortController().signal
 
-    const got = await connection.handler!('advisor/get', { args: {} }, signal)
+    const got = await connection.handler!('advisor/get', { args: {} }, signal, connection.peer)
     // Seven-key wire (issue #102, qc1 W-1): the read path carries the two new
     // persisted keys (schema-defaulted 768/false here).
     expect(got).toEqual({
@@ -528,6 +534,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
       'advisor/set',
       { args: { patch: { provider: 'deepseek', model: 'deepseek-chat' } } },
       signal,
+      connection.peer,
     )
     expect(setResult.ok).toBe(true)
     if (setResult.ok) {
@@ -537,7 +544,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     }
 
     // The written value is visible on the next get.
-    const gotAgain = await connection.handler!('advisor/get', { args: {} }, signal)
+    const gotAgain = await connection.handler!('advisor/get', { args: {} }, signal, connection.peer)
     expect(gotAgain).toMatchObject({
       ok: true,
       value: { config: { enabled: true, provider: 'deepseek', model: 'deepseek-chat' } },
@@ -548,18 +555,18 @@ describe('typertGateway endpoint claims + payload contract', () => {
     const { connection } = await composeGatewayHarness()
     const signal = new AbortController().signal
 
-    const badArgs = await connection.handler!('advisor/set', { args: 'not-an-object' }, signal)
+    const badArgs = await connection.handler!('advisor/set', { args: 'not-an-object' }, signal, connection.peer)
     expect(badArgs.ok).toBe(false)
     if (!badArgs.ok) expect(badArgs.error.message).toContain('plain-object args field')
 
-    const unknownWire = await connection.handler!('advisor/set', { args: { wrong: 1 } }, signal)
+    const unknownWire = await connection.handler!('advisor/set', { args: { wrong: 1 } }, signal, connection.peer)
     expect(unknownWire.ok).toBe(false)
     if (!unknownWire.ok) expect(unknownWire.error.message).toContain('args fields do not match the descriptor')
   })
 
   it('invokes directly through ctx.typertGateway (same strict descriptor path)', async () => {
     const { ctx } = await composeGatewayHarness()
-    const result = await ctx.typertGateway.invoke({ namespace: 'advisor', method: 'get', args: {} })
+    const result = await ctx.typertGateway.invoke({ namespace: 'advisor', method: 'get', args: {}, peer: ownerPeer(ctx) })
     expect(result).toMatchObject({ config: { enabled: false, immuneTurns: 5 } })
   })
 
@@ -570,7 +577,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     // start (gate semantics), and the scalar latches are seeded from the raw
     // source (S1) rather than hardcoded defaults.
     const { connection } = await composeGatewayHarness({ bogus: 1 } as Partial<AdvisorConfig>)
-    const got = await connection.handler!('advisor/get', { args: {} }, new AbortController().signal)
+    const got = await connection.handler!('advisor/get', { args: {} }, new AbortController().signal, connection.peer)
     expect(got.ok).toBe(true)
     if (got.ok) {
       const config = (got.value as { config: ResolvedAdvisorConfig }).config
@@ -589,13 +596,13 @@ describe('typertGateway endpoint claims + payload contract', () => {
     const { connection } = await composeGatewayHarness()
     const signal = new AbortController().signal
 
-    const rejected = await connection.handler!('advisor/set', { args: { patch: { bogus: 1 } } }, signal)
+    const rejected = await connection.handler!('advisor/set', { args: { patch: { bogus: 1 } } }, signal, connection.peer)
     expect(rejected.ok).toBe(false)
     if (!rejected.ok) {
       expect(rejected.error.message).toContain('unknown config key "bogus"')
     }
     // The rejected write persisted nothing: the composed config is unchanged.
-    const got = await connection.handler!('advisor/get', { args: {} }, signal)
+    const got = await connection.handler!('advisor/get', { args: {} }, signal, connection.peer)
     expect(got.ok).toBe(true)
     if (got.ok) {
       expect((got.value as { config: ResolvedAdvisorConfig }).config.enabled).toBe(false)
@@ -613,6 +620,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
       'advisor/set',
       { args: { patch: { provider: 'deepseek', model: 'deepseek-chat', maxTokens: 4096, proseFallback: true } } },
       signal,
+      connection.peer,
     )
     expect(setResult.ok).toBe(true)
     if (setResult.ok) {
@@ -621,7 +629,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
       })
     }
 
-    const got = await connection.handler!('advisor/get', { args: {} }, signal)
+    const got = await connection.handler!('advisor/get', { args: {} }, signal, connection.peer)
     expect(got.ok).toBe(true)
     if (got.ok) {
       expect(got.value).toMatchObject({
@@ -636,7 +644,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     // same path: present on the wire iff the raw entry pins them (the
     // resolver never ran, so no schema default fills them here).
     const seeded = await composeGatewayHarness({ bogus: 1, maxTokens: 4096, proseFallback: true } as Partial<AdvisorConfig>)
-    const seededGot = await seeded.connection.handler!('advisor/get', { args: {} }, new AbortController().signal)
+    const seededGot = await seeded.connection.handler!('advisor/get', { args: {} }, new AbortController().signal, seeded.connection.peer)
     expect(seededGot.ok).toBe(true)
     if (seededGot.ok) {
       const config = (seededGot.value as { config: ResolvedAdvisorConfig }).config
@@ -646,7 +654,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     }
 
     const bare = await composeGatewayHarness({ bogus: 1 } as Partial<AdvisorConfig>)
-    const bareGot = await bare.connection.handler!('advisor/get', { args: {} }, new AbortController().signal)
+    const bareGot = await bare.connection.handler!('advisor/get', { args: {} }, new AbortController().signal, bare.connection.peer)
     expect(bareGot.ok).toBe(true)
     if (bareGot.ok) {
       const config = (bareGot.value as { config: ResolvedAdvisorConfig }).config
@@ -667,6 +675,7 @@ describe('composed plugin (apply wires the gateway)', () => {
     const ctx = new Context()
     await ctx.plugin(TypertRegistry)
     await ctx.plugin(TypertGatewayService)
+    provideRemoteAccess(ctx)
     ctx.provide('sessions', {} as never)
     ctx.provide('agents', { get: () => undefined } as never)
     ctx.provide('llm', { stream: async () => {} } as never)
@@ -677,7 +686,9 @@ describe('composed plugin (apply wires the gateway)', () => {
       expect(ctx.reflect.props['advisor']).toEqual({ type: 'service' })
     })
 
-    const before = await ctx.typertGateway.invoke({ namespace: 'advisor', method: 'get', args: {} }) as { config: ResolvedAdvisorConfig }
+    const before = await ctx.typertGateway.invoke({
+      namespace: 'advisor', method: 'get', args: {}, peer: ownerPeer(ctx),
+    }) as { config: ResolvedAdvisorConfig }
     expect(before.config).toEqual({
       enabled: false,
       systemPrompt: 'entry prompt',
@@ -695,13 +706,16 @@ describe('composed plugin (apply wires the gateway)', () => {
         namespace: 'advisor',
         method: 'set',
         args: { patch: { provider: 'deepseek', model: 'deepseek-chat' } },
+        peer: ownerPeer(ctx),
       }) as { config: ResolvedAdvisorConfig }
       expect(result.config.enabled).toBe(true)
       expect(result.config.provider).toBe('deepseek')
       expect(result.config.model).toBe('deepseek-chat')
     })
 
-    const after = await ctx.typertGateway.invoke({ namespace: 'advisor', method: 'get', args: {} }) as { config: ResolvedAdvisorConfig }
+    const after = await ctx.typertGateway.invoke({
+      namespace: 'advisor', method: 'get', args: {}, peer: ownerPeer(ctx),
+    }) as { config: ResolvedAdvisorConfig }
     expect(after.config).toEqual({
       enabled: true,
       provider: 'deepseek',
@@ -718,6 +732,7 @@ describe('composed plugin (apply wires the gateway)', () => {
     const ctx = new Context()
     await ctx.plugin(TypertRegistry)
     await ctx.plugin(TypertGatewayService)
+    provideRemoteAccess(ctx)
     ctx.provide('sessions', {} as never)
     ctx.provide('agents', { get: () => undefined } as never)
     ctx.provide('llm', { stream: async () => {} } as never)
@@ -745,7 +760,7 @@ describe('composed plugin (apply wires the gateway)', () => {
 
     // The single registration keeps dispatch unambiguous (a duplicate would
     // surface as typertGateway ambiguous-endpoint).
-    const result = await ctx.typertGateway.invoke({ namespace: 'advisor', method: 'get', args: {} })
+    const result = await ctx.typertGateway.invoke({ namespace: 'advisor', method: 'get', args: {}, peer: ownerPeer(ctx) })
     expect(result).toMatchObject({ config: { enabled: false } })
   })
 })

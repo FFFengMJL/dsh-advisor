@@ -28,6 +28,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { MemoryEntryConfig, harnessAdvisorPlugin } from './support/memory-settings'
+import { ownerPeer, provideRemoteAccess } from './support/typert-gateway'
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { installAdvisorSettings } from '../src/settings'
@@ -152,6 +153,7 @@ async function compose(): Promise<Harness> {
   const ctx = new Context()
   await ctx.plugin(TypertRegistry)
   await ctx.plugin(TypertGatewayService)
+  provideRemoteAccess(ctx)
   ctx.provide('sessions', {} as never)
   const resolveModelInfo = vi.fn(async () => ({ provider: 'deepseek', model: 'deepseek-chat' }))
   ctx.provide('agents', { get: (id: string) => (id === 'sess-1' ? agentDouble(id) : undefined) } as never)
@@ -168,7 +170,7 @@ describe('composed session endpoints (apply wiring)', () => {
   it('getSession returns the authoritative snapshot; the shape pins lifetime live-session', async () => {
     const { ctx } = await compose()
     const result = await ctx.typertGateway.invoke({
-      namespace: 'advisor', method: 'getSession', args: { sessionId: 'sess-1' },
+      namespace: 'advisor', method: 'getSession', args: { sessionId: 'sess-1' }, peer: ownerPeer(ctx),
     })
     // Pairless enabled global → the S4 gate resolves to DISABLED-with-reason;
     // no modelSource/effectiveModel keys (the wire omits absent values).
@@ -215,7 +217,7 @@ describe('composed session endpoints (apply wiring)', () => {
     entry.commit(ctx, { provider: null, model: null })
 
     const readback = await ctx.typertGateway.invoke({
-      namespace: 'advisor', method: 'getSession', args: { sessionId: 'sess-1' },
+      namespace: 'advisor', method: 'getSession', args: { sessionId: 'sess-1' }, peer: ownerPeer(ctx),
     })
     // The session is off by its OWN override: plain disabled — the snapshot
     // must NOT carry the S4 gate reason (that describes the persisted pair,
@@ -235,6 +237,7 @@ describe('composed session endpoints (apply wiring)', () => {
       namespace: 'advisor',
       method: 'setSessionModel',
       args: { sessionId: 'sess-1', selection: { provider: 'deepseek', model: 'deepseek-chat' } },
+      peer: ownerPeer(ctx),
     })
     expect(result).toEqual({
       snapshot: {
@@ -250,7 +253,7 @@ describe('composed session endpoints (apply wiring)', () => {
     expect(resolveModelInfo).toHaveBeenCalledTimes(1)
     // A disabled... (enabled) session snapshot no longer carries the gate reason.
     const readback = await ctx.typertGateway.invoke({
-      namespace: 'advisor', method: 'getSession', args: { sessionId: 'sess-1' },
+      namespace: 'advisor', method: 'getSession', args: { sessionId: 'sess-1' }, peer: ownerPeer(ctx),
     })
     expect(readback).toEqual(result)
   })
@@ -261,10 +264,11 @@ describe('composed session endpoints (apply wiring)', () => {
       namespace: 'advisor',
       method: 'setSessionModel',
       args: { sessionId: 'sess-1', selection: { provider: 'deepseek', model: 'deepseek-chat' } },
+      peer: ownerPeer(ctx),
     })
     resolveModelInfo.mockClear()
     const result = await ctx.typertGateway.invoke({
-      namespace: 'advisor', method: 'setSessionModel', args: { sessionId: 'sess-1', selection: null },
+      namespace: 'advisor', method: 'setSessionModel', args: { sessionId: 'sess-1', selection: null }, peer: ownerPeer(ctx),
     })
     expect(result).toEqual({
       snapshot: {
@@ -284,8 +288,9 @@ describe('composed session endpoints (apply wiring)', () => {
       namespace: 'advisor',
       method: 'setSessionModel',
       args: { sessionId: 'sess-1', selection: { provider: 'deepseek', model: 'deepseek-chat' } },
+      peer: ownerPeer(ctx),
     })
-    const global = await ctx.typertGateway.invoke({ namespace: 'advisor', method: 'get', args: {} })
+    const global = await ctx.typertGateway.invoke({ namespace: 'advisor', method: 'get', args: {}, peer: ownerPeer(ctx) })
     // The global default has no pair (entry config — resolved to
     // disabled-with-reason) — the session pin never leaked into the entry
     // config, and `advisor/set` stayed the only global writer.
@@ -296,7 +301,7 @@ describe('composed session endpoints (apply wiring)', () => {
   it('rejects unknown/disposed targets as advisor/session-unknown WITHOUT allocating validation work', async () => {
     const { ctx, resolveModelInfo } = await compose()
     const ghostGet = await ctx.typertGateway.invoke({
-      namespace: 'advisor', method: 'getSession', args: { sessionId: 'ghost' },
+      namespace: 'advisor', method: 'getSession', args: { sessionId: 'ghost' }, peer: ownerPeer(ctx),
     })
     expect(ghostGet).toEqual({
       error: { tag: 'advisor/session-unknown', message: expect.stringContaining('not live') },
@@ -305,6 +310,7 @@ describe('composed session endpoints (apply wiring)', () => {
       namespace: 'advisor',
       method: 'setSessionModel',
       args: { sessionId: 'ghost', selection: { provider: 'deepseek', model: 'deepseek-chat' } },
+      peer: ownerPeer(ctx),
     })
     expect(ghostSet).toEqual({
       error: { tag: 'advisor/session-unknown', message: expect.any(String) },
@@ -318,6 +324,7 @@ describe('composed session endpoints (apply wiring)', () => {
     const ctx = new Context()
     await ctx.plugin(TypertRegistry)
     await ctx.plugin(TypertGatewayService)
+    provideRemoteAccess(ctx)
     ctx.provide('sessions', {} as never)
     ctx.provide('agents', { get: (id: string) => (id === 'sess-1' ? agentDouble(id) : undefined) } as never)
     const resolveModelInfo = vi.fn(async () => { throw new Error('unknown route') })
@@ -330,13 +337,14 @@ describe('composed session endpoints (apply wiring)', () => {
       namespace: 'advisor',
       method: 'setSessionModel',
       args: { sessionId: 'sess-1', selection: { provider: 'bogus', model: 'nope' } },
+      peer: ownerPeer(ctx),
     })
     expect(result).toEqual({
       error: { tag: 'advisor/failed', message: expect.stringContaining('unknown route') },
     })
     // The failed write left no pin behind (the pairless gate state again).
     const readback = await ctx.typertGateway.invoke({
-      namespace: 'advisor', method: 'getSession', args: { sessionId: 'sess-1' },
+      namespace: 'advisor', method: 'getSession', args: { sessionId: 'sess-1' }, peer: ownerPeer(ctx),
     })
     expect(readback).toEqual({
       snapshot: {
