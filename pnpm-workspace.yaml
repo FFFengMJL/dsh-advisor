@@ -18,7 +18,6 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/cordis@4.0.5'
   - '@deepseek-ai/cosmokit@1.8.6'
   - '@deepseek-ai/dsh-agent-default-model@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-agent-preset@0.2.1-rc.1'
   - '@deepseek-ai/dsh-agent@0.2.1-rc.1'
   - '@deepseek-ai/dsh-api-gateway@0.2.1-rc.1'
   - '@deepseek-ai/dsh-api-remotes@0.2.1-rc.1'
@@ -31,7 +30,6 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-client-locale@0.2.1-rc.1'
   - '@deepseek-ai/dsh-client-store@0.2.1-rc.1'
   - '@deepseek-ai/dsh-client-ui-plugin-manager@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-client-ui-primitives@0.2.1-rc.1'
   - '@deepseek-ai/dsh-client-ui-renderer@0.2.1-rc.1'
   - '@deepseek-ai/dsh-client-ui-settings@0.2.1-rc.1'
   - '@deepseek-ai/dsh-client-ui-slots@0.2.1-rc.1'
@@ -88,7 +86,6 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-session-format-v3-to-v4@0.2.1-rc.1'
   - '@deepseek-ai/dsh-session-format@0.2.1-rc.1'
   - '@deepseek-ai/dsh-client-ui-conversation@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-util-code-language@0.2.1-rc.1'
 
 # The published @deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.1
 # runtime/type closure needs these modules, but the published manifest moved
