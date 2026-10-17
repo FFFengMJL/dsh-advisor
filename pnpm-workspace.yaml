@@ -13,7 +13,7 @@ allowBuilds:
 # defaults to 0 = no release-age check). Keep versions in sync with the
 # lockfile when bumping dsh peers.
 minimumReleaseAgeExclude:
-  - '@deepseek-ai/cordis-plugin-include@1.0.10'
+  - '@deepseek-ai/cordis-plugin-include@1.0.9'
   - '@deepseek-ai/cordis-plugin-loader@1.0.6'
   - '@deepseek-ai/cordis@4.0.5'
   - '@deepseek-ai/cosmokit@1.8.6'
@@ -61,6 +61,7 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-user-approval@0.2.1-rc.1'
   - '@deepseek-ai/dsh-util-crypto@0.2.1-rc.1'
   - '@deepseek-ai/dsh-util-values@0.2.1-rc.1'
+  - '@deepseek-ai/dsh-working-directory@0.2.1-rc.1'
   - '@deepseek-ai/dsh-workspace@0.2.1-rc.1'
   - '@deepseek-ai/schemastery@3.18.5'
   - '@deepseek-ai/dsh-tool-todo@0.2.1-rc.1'
