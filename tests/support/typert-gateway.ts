@@ -26,11 +26,13 @@ export function ownerPeer(ctx: Context): PeerScope {
 }
 
 /**
- * Mount the access decider the Gateway injects. Only non-owner Peers reach
- * `decide`, and a test calls as the owner, so this double never decides; it
- * answers `allow` so an accidental non-owner call stays visible in its result
- * rather than in a crash.
+ * Mount the access decider the Gateway injects. The owner Peer bypasses it,
+ * so this owner-only fixture stays unreached and fails closed if it is not.
  */
 export function provideRemoteAccess(ctx: Context): void {
-  ctx.provide('remoteAccess', { decide: () => ({ kind: 'allow' as const }) })
+  ctx.provide('remoteAccess', {
+    decide: () => {
+      throw new Error('owner-only fixture: unexpected non-owner access decision')
+    },
+  })
 }
