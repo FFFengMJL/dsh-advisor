@@ -48,7 +48,9 @@ import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { installAdvisorSettings } from '../src/settings'
 import { AdvisorConfigGateway, advisorTypertContribution } from '../src/gateway'
-import type { AdvisorModelInfoResolver, AdvisorModelReasoningResult } from '../src/gateway'
+import type {
+  AdvisorGatewayLogger, AdvisorModelInfoResolver, AdvisorModelReasoningEffortWire, AdvisorModelReasoningResult,
+} from '../src/gateway'
 import { resolveAdvisorConfig } from '../src/config'
 import type { AdvisorConfig, ResolvedAdvisorConfig } from '../src/config'
 import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
@@ -676,8 +678,8 @@ describe('typertGateway endpoint claims + payload contract', () => {
   // -------------------------------------------------------------------------
 
   it('serves the declared reasoning efforts in adapter order through /api/advisor/modelReasoning (T2)', async () => {
-    // The adapter's declared efforts (least → greatest) and its configured
-    // default pass through untouched; an absent `description` is OMITTED, not
+    // The adapter's declared efforts (least → greatest) pass through
+    // untouched; an absent `description` is OMITTED, not
     // present-as-undefined (the typertGateway result validation rejects
     // undefined values).
     const resolveModelInfo = vi.fn(async () => ({
@@ -687,7 +689,6 @@ describe('typertGateway endpoint claims + payload contract', () => {
           { id: 'medium', name: 'Medium', description: 'Balanced' },
           { id: 'high', name: 'High' },
         ],
-        defaultEffort: 'medium',
       },
     }))
     const { connection } = await composeGatewayHarness(undefined, resolveModelInfo)
@@ -705,10 +706,8 @@ describe('typertGateway endpoint claims + payload contract', () => {
           { id: 'medium', name: 'Medium', description: 'Balanced' },
           { id: 'high', name: 'High' },
         ],
-        defaultEffort: 'medium',
       },
     })
-    expect(resolveModelInfo).toHaveBeenCalledWith('deepseek', 'deepseek-chat', expect.any(AbortSignal))
   })
 
   it('answers a tagged data error through the wire when no resolver is injected (never a wire failure, T2)', async () => {
@@ -844,7 +843,7 @@ describe('composed plugin (apply wires the gateway)', () => {
     ctx.provide('llm', {
       stream: async () => {},
       resolveModelInfo: async () => ({
-        reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' },
+        reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] },
       }),
     } as never)
     const entry = new MemoryEntryConfig(entryConfig({ systemPrompt: 'entry prompt' }))
@@ -857,7 +856,6 @@ describe('composed plugin (apply wires the gateway)', () => {
     })
     expect(result).toEqual({
       efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }],
-      defaultEffort: 'low',
     })
   })
 
@@ -904,15 +902,24 @@ describe('composed plugin (apply wires the gateway)', () => {
 
 describe('AdvisorConfigGateway.modelReasoning (capability endpoint arms)', () => {
   /** A gateway over a complete pair, with the capability resolver under test. */
-  function gatewayWith(resolveModelInfo?: AdvisorModelInfoResolver): AdvisorConfigGateway {
+  function gatewayWith(
+    resolveModelInfo?: AdvisorModelInfoResolver,
+    logger?: AdvisorGatewayLogger,
+  ): AdvisorConfigGateway {
     const ctx = new Context()
     const entry = entryConfig({ provider: 'deepseek', model: 'deepseek-chat' })
-    return new AdvisorConfigGateway(ctx, installAdvisorSettings(ctx, entry), () => undefined, resolveModelInfo)
+    return new AdvisorConfigGateway(
+      ctx,
+      installAdvisorSettings(ctx, entry),
+      () => undefined,
+      resolveModelInfo,
+      logger,
+    )
   }
 
   const pair: [string, string] = ['deepseek', 'deepseek-chat']
 
-  it('returns the declared efforts in the adapter order, omitting an absent description/defaultEffort', async () => {
+  it('returns the declared efforts in the adapter order, omitting an absent description', async () => {
     // RD-2: least → greatest is the adapter's order, and that is the order the
     // selector must show; the runtime picks `efforts[0]` for the automatic arm,
     // so a reordered list would change what "automatic" sends.
@@ -950,12 +957,46 @@ describe('AdvisorConfigGateway.modelReasoning (capability endpoint arms)', () =>
     })
   })
 
-  it('answers failed (never throws) when the lookup rejects', async () => {
+  it('answers failed with a generic message, logging the resolver detail instead of leaking it on the wire', async () => {
+    const warn = vi.fn()
     const gateway = gatewayWith(async () => {
-      throw new Error('unknown route')
-    })
+      throw new Error('unknown route: internal-adapter-detail')
+    }, { warn })
     await expect(gateway.modelReasoning(...pair)).resolves.toEqual({
-      error: { tag: 'advisor/model-reasoning-failed', message: expect.stringContaining('unknown route') },
+      error: { tag: 'advisor/model-reasoning-failed', message: 'advisor: model capability lookup failed' },
+    })
+    expect(warn).toHaveBeenCalledWith('advisor: model capability lookup failed', {
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      error: expect.any(Error),
+    })
+  })
+
+  it('drops malformed declared efforts and coerces an empty name to the id', async () => {
+    // Adapter data is untrusted: an entry without a usable string id is
+    // ignored (including a null element) and an empty name falls back to the
+    // id, so the selector can never render a nameless or unselectable option.
+    const entries = [
+      { id: '', name: 'Nameless' },
+      { id: 'low', name: '' },
+      { id: 'high', name: 'High', description: 'Great' },
+      { name: 'No id' },
+      null,
+    ] as unknown as readonly AdvisorModelReasoningEffortWire[]
+    const gateway = gatewayWith(async () => ({ reasoning: { efforts: entries } }))
+    expect(await gateway.modelReasoning(...pair)).toEqual({
+      efforts: [
+        { id: 'low', name: 'low' },
+        { id: 'high', name: 'High', description: 'Great' },
+      ],
+    })
+  })
+
+  it('answers unavailable when every declared effort filters out', async () => {
+    const entries = [null, { id: '' }] as unknown as readonly AdvisorModelReasoningEffortWire[]
+    const gateway = gatewayWith(async () => ({ reasoning: { efforts: entries } }))
+    expect(await gateway.modelReasoning(...pair)).toEqual({
+      error: { tag: 'advisor/model-reasoning-unavailable', message: expect.stringContaining('declares no reasoning') },
     })
   })
 

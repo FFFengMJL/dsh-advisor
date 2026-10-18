@@ -222,7 +222,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   let sessionControl: AdvisorSessionGatewayFace | undefined
   try {
     new AdvisorConfigGateway(ctx, bridge, () => sessionControl, (provider, model, signal) =>
-      appRootLlm().resolveModelInfo(provider, model, signal))
+      appRootLlm().resolveModelInfo(provider, model, signal), ctx.logger('advisor'))
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('advisor').debug('advisor gateway already registered — no gateway on this fiber (multi-fiber dedupe)')

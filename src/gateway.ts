@@ -140,18 +140,15 @@ export interface AdvisorModelReasoningEffortWire {
 
 /**
  * The `LlmResolvedModelInfo.reasoning` slice the capability endpoint serves.
- * Structural (no dsh import): the gateway reads exactly these two members, and
+ * Structural (no dsh import): the gateway reads exactly `efforts` — the
+ * adapter's `defaultEffort` is deliberately NOT projected, since the runtime's
+ * "automatic" is `efforts[0]` and nothing consumes the adapter default — and
  * the wiring that passes `LlmRuntime.resolveModelInfo` over is typechecked
  * against this shape at the assignment site.
  */
 export interface AdvisorModelReasoningInfo {
   /** Declared efforts, least → greatest — the adapter's order, preserved. */
   readonly efforts: readonly AdvisorModelReasoningEffortWire[]
-  /**
-   * Adapter-configured default materialized into requests when callers omit
-   * an effort. Absence preserves the provider's own default.
-   */
-  readonly defaultEffort?: string
 }
 
 /**
@@ -185,6 +182,15 @@ export type AdvisorModelReasoningErrorTag =
 export type AdvisorModelReasoningResult =
   | AdvisorModelReasoningInfo
   | { readonly error: { readonly tag: AdvisorModelReasoningErrorTag; readonly message: string } }
+
+/**
+ * Logger seam for the capability endpoint's failure diagnostics (cordis
+ * `ctx.logger('advisor')` satisfies it). OPTIONAL: a gateway constructed
+ * without one answers the same generic wire message and simply logs nothing.
+ */
+export interface AdvisorGatewayLogger {
+  warn(message: string, ...args: unknown[]): void
+}
 
 /** Build one tagged capability error (keeps every arm's shape identical). */
 function modelReasoningError(tag: AdvisorModelReasoningErrorTag, message: string): AdvisorModelReasoningResult {
@@ -281,6 +287,11 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * `advisor/model-reasoning-unavailable` in data and stays inert.
    */
   private readonly resolveModelInfo: AdvisorModelInfoResolver | undefined
+  /**
+   * The failure-diagnostic logger (T2 hardening). Absent → the endpoint still
+   * answers the same generic wire message, unlogged.
+   */
+  private readonly logger: AdvisorGatewayLogger | undefined
 
   /**
    * @param ctx - owning context (the plugin fiber's ctx inside `apply`).
@@ -292,17 +303,21 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * @param resolveModelInfo - the app-root `LlmRuntime.resolveModelInfo`
    *   lookup the capability endpoint drives (T2); defaults to "absent" for the
    *   same reason — the endpoint then reports unavailable, never throws.
+   * @param logger - diagnostic sink for the capability lookup's failure detail
+   *   (never put on the wire); optional so existing constructions keep working.
    */
   constructor(
     ctx: Context,
     bridge: AdvisorSettingsBridge,
     sessionControl: () => AdvisorSessionGatewayFace | undefined = () => undefined,
     resolveModelInfo?: AdvisorModelInfoResolver,
+    logger?: AdvisorGatewayLogger,
   ) {
     super(ctx, 'advisor')
     this.bridge = bridge
     this.sessionControl = sessionControl
     this.resolveModelInfo = resolveModelInfo
+    this.logger = logger
     // The settings service is optional (no settings → entry fallback). The
     // inject child activates only when a settings service is composed, mirroring
     // installAdvisorSettings' conditional child; the returned disposer mirrors
@@ -386,18 +401,17 @@ export class AdvisorConfigGateway extends TypertRemoteService {
   /**
    * T2 (plan dsh-advisor-reasoning-effort) — the READ-ONLY capability query
    * (`/api/advisor/modelReasoning`, args `{ provider, model }`): the efforts
-   * the resolved model DECLARES, in the adapter's least → greatest order, plus
-   * its configured default. The settings card's effort selector reads THIS
-   * instead of a client-side catalog: a profile-declared model has no catalog
-   * entry, so a second source would drift from what the runtime can send.
+   * the resolved model DECLARES, in the adapter's least → greatest order. The
+   * settings card's effort selector reads THIS instead of a client-side
+   * catalog: a profile-declared model has no catalog entry, so a second source
+   * would drift from what the runtime can send.
    *
    * Never throws — every unanswerable arm is a tagged data error, so a
    * capability query can never fail the settings card. The success value
-   * omits absent optional keys (`description`, `defaultEffort`): the
-   * typertGateway result validation rejects undefined values. The lookup is
-   * bounded by a 60 s deadline (W-1): a hung resolver settles as
-   * `advisor/model-reasoning-failed` naming the timeout, never an unbounded
-   * wait.
+   * omits an absent `description` (the typertGateway result validation
+   * rejects undefined values). The lookup is bounded by a 60 s deadline
+   * (W-1): a hung resolver settles as `advisor/model-reasoning-failed`
+   * naming the timeout, never an unbounded wait.
    */
   async modelReasoning(provider: string, model: string): Promise<AdvisorModelReasoningResult> {
     // The SAME pair validation as the command face and the session endpoints
@@ -422,10 +436,14 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     try {
       info = await raceSignal(resolve(pair.provider, pair.model, signal), signal)
     } catch (error) {
-      return modelReasoningError(
-        'advisor/model-reasoning-failed',
-        `advisor: model capability lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+      // The resolver's own message stays OFF the wire (adapter internals are
+      // not client data); the caller only needs the tag, the detail goes to
+      // the gateway logger.
+      this.logger?.warn(
+        'advisor: model capability lookup failed',
+        { provider: pair.provider, model: pair.model, error },
       )
+      return modelReasoningError('advisor/model-reasoning-failed', 'advisor: model capability lookup failed')
     }
     if (info === 'aborted') {
       return modelReasoningError(
@@ -436,21 +454,25 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     // No reasoning metadata (or an empty declaration) = nothing selectable:
     // the same verdict the runtime reaches (RD-2), so the card can never offer
     // an effort the runtime would silently replace with the smallest one.
-    const efforts = info?.reasoning?.efforts
-    const defaultEffort = info?.reasoning?.defaultEffort
-    if (efforts === undefined || efforts[0] === undefined) {
+    // The declaration is adapter data: entries without a usable id are
+    // dropped and a missing/empty name falls back to the id, so the selector
+    // can never render a nameless or unselectable option; a declaration that
+    // filters empty takes the same branch as an absent one.
+    const declared = (info?.reasoning?.efforts ?? []).filter(
+      (entry) => typeof entry?.id === 'string' && entry.id.length > 0,
+    )
+    if (declared[0] === undefined) {
       return modelReasoningError(
         'advisor/model-reasoning-unavailable',
         `advisor: ${pair.provider}/${pair.model} declares no reasoning efforts`,
       )
     }
     return {
-      efforts: efforts.map(({ id, name, description }) => ({
+      efforts: declared.map(({ id, name, description }) => ({
         id,
-        name,
+        name: typeof name === 'string' && name.length > 0 ? name : id,
         ...(description === undefined ? {} : { description }),
       })),
-      ...(defaultEffort === undefined ? {} : { defaultEffort }),
     }
   }
 
