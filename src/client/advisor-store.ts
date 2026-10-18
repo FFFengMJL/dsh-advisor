@@ -553,6 +553,19 @@ export class AdvisorSettingsStore {
       const seedModel = this.seed.model
       if (seedModel !== undefined) void this.ensureModelReasoning(selected, seedModel)
     }
+    // task-3 review R1: a pushed invalidation can reload while an edit is in
+    // flight — the preserved draft may hold a DIFFERENT complete pair than
+    // the seed (Discard still rewinds to the seed, so both pairs stay
+    // resolvable). The invalidation above cleared every capability entry, so
+    // re-resolve the draft's pair as well; the keyed cache/in-flight dedupe
+    // makes the call free when both pairs match, and the draft itself is
+    // never touched here.
+    const draft = this.store.getSnapshot().draft
+    if (draft.provider !== undefined
+      && draft.model !== undefined
+      && options.some(option => option.provider === draft.provider)) {
+      void this.ensureModelReasoning(draft.provider, draft.model)
+    }
   }
 
   /**

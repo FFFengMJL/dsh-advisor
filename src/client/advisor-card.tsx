@@ -231,9 +231,15 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
   // stale provider/model copy — the user keeps the stored value (the host
   // falls back to the smallest declared effort) or reselects; Save is never
   // gated by the hint.
-  const effortStale = reasoningState === 'ready'
-    && draft.reasoningEffort !== undefined
-    && !(reasoningOptions ?? []).some(option => option.id === draft.reasoningEffort)
+  const effortOptions = reasoningOptions ?? []
+  // task-3 review R2: a stored effort the current options do not declare
+  // (capability 'ready' without the id, or 'unavailable') must render as its
+  // OWN option — otherwise the unmatched single-select value silently falls
+  // back to the first (auto) option and choosing auto fires no change event,
+  // leaving no usable clear-to-automatic transition.
+  const storedEffortUnmatched = draft.reasoningEffort !== undefined
+    && !effortOptions.some(option => option.id === draft.reasoningEffort)
+  const effortStale = reasoningState === 'ready' && storedEffortUnmatched
   const errorText = applyState.kind === 'error' ? failureCopy(applyState.failure, t) : undefined
   // Upstream disabled semantics (Global Constraints): save = !dirty ||
   // invalid || saving; discard = !dirty || saving. In a read-only
@@ -316,7 +322,14 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
               onChange={(event) => { controller.setReasoningEffort(event.target.value) }}
             >
               <option value="">{t('reasoningEffortAuto')}</option>
-              {(reasoningOptions ?? []).map(option => (
+              {storedEffortUnmatched && draft.reasoningEffort !== undefined
+                ? (
+                  <option value={draft.reasoningEffort}>
+                    {t('reasoningEffortStored', { id: draft.reasoningEffort })}
+                  </option>
+                )
+                : null}
+              {effortOptions.map(option => (
                 <option key={option.id} value={option.id}>{option.name || option.id}</option>
               ))}
             </select>

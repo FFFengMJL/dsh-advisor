@@ -1309,6 +1309,41 @@ describe('thinking-effort capability (plan dsh-advisor-reasoning-effort, task 3)
     expect(state.modelReasoning[keyB]).toEqual([{ id: 'off', name: 'Off' }])
   })
 
+  it('re-resolves the preserved draft pair on a load() invalidation (draft on B, seed on A — R1)', async () => {
+    // task-3 review R1: seed A, the draft switches to B, then a pushed
+    // invalidation reloads BEFORE the save — the host config still identifies
+    // A while the draft intentionally stays on B. The reload clears every
+    // capability entry, so load() must re-resolve BOTH the seed pair (the
+    // Discard target) and the preserved draft pair.
+    const keyB = 'deepseek-official\u0000ds-b'
+    const { remote, rpc, modelReasoning } = scriptedApi({
+      config: { ...PAIRED },
+      reasoning: {
+        [KEY]: { efforts: [{ id: 'low', name: 'Low' }] },
+        [keyB]: { efforts: [{ id: 'high', name: 'High' }] },
+      },
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    store.setModel('ds-b')
+    await vi.waitFor(() => {
+      expect(store.store.getSnapshot().modelReasoningState[keyB]).toBe('ready')
+    })
+    expect(draftOf(store).model).toBe('ds-b')
+
+    await store.load()
+    await vi.waitFor(() => {
+      const state = store.store.getSnapshot()
+      expect(state.modelReasoningState[KEY]).toBe('ready')
+      expect(state.modelReasoningState[keyB]).toBe('ready')
+    })
+    expect(draftOf(store).model).toBe('ds-b') // the draft edit survives
+    expect(modelReasoning).toHaveBeenCalledTimes(4) // A, B, then A + B again
+    const state = store.store.getSnapshot()
+    expect(state.modelReasoning[KEY]).toEqual([{ id: 'low', name: 'Low' }])
+    expect(state.modelReasoning[keyB]).toEqual([{ id: 'high', name: 'High' }])
+  })
+
   it('marks the capability unavailable on a tagged data error without polluting the options', async () => {
     const { remote, rpc } = scriptedApi({ config: { ...PAIRED } }) // no reasoning record → tagged error
     const store = new AdvisorSettingsStore(remote, rpc, schema)

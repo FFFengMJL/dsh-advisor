@@ -38,6 +38,10 @@ export const en = {
   reasoningEffortHint: 'Leave empty to use the smallest thinking effort the selected model declares.',
   reasoningEffortUnavailable: 'The selected model declares no selectable thinking efforts — only automatic is available.',
   reasoningEffortStale: 'The stored thinking effort is not declared by the selected model. Reselect one or keep the stored value.',
+  // The select's own option for a stored value the selected model does not
+  // declare (stale or capability-unavailable) — {id} interpolates the stored
+  // effort id (task-3 review R2).
+  reasoningEffortStored: 'Stored: {id} (unavailable)',
   save: 'Save',
   saving: 'Saving…',
   discard: 'Discard',
@@ -93,6 +97,7 @@ export const zh: typeof en = {
   reasoningEffortHint: '留空则使用所选模型声明的最小思考权重。',
   reasoningEffortUnavailable: '所选模型未声明可选的思考权重——仅可使用自动。',
   reasoningEffortStale: '存储的思考权重不在所选模型的声明列表中。请重新选择，或保留存储的值。',
+  reasoningEffortStored: '已存储：{id}（所选模型不可用）',
   save: '保存',
   saving: '保存中…',
   discard: '放弃修改',

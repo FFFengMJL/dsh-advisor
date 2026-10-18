@@ -73,8 +73,14 @@ function bindSnapshotSelector<T>(w: HostObservable<T>): SnapshotSelectorHook<T> 
 
 // The synthesized `t` seat's key domain is the namespace dictionary union
 // plus the shared `common` vocabulary; the specs only ever call the card's
-// own keys, so the en-lookup casts the key.
-const t: AdvisorCardProps['t'] = key => en[key as keyof typeof en]
+// own keys, so the en-lookup casts the key. The stand-in mirrors the real
+// seat's `{name}` template interpolation.
+const t: AdvisorCardProps['t'] = (key, params) => {
+  const template = en[key as keyof typeof en]
+  return params === undefined
+    ? template
+    : template.replace(/\{(\w+)\}/g, (_match, name: string) => String(params[name] ?? ''))
+}
 
 /**
  * Full card props the renderer would bind: the registrant's business inject
@@ -998,6 +1004,63 @@ describe('AdvisorCard thinking-effort select (plan dsh-advisor-reasoning-effort,
     fireEvent.change(screen.getByLabelText(en.systemPrompt), { target: { value: 'x' } })
     view.rerender(<AdvisorCard {...props} />)
     expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('shows a seeded effort as its own selected option when the capability is unavailable (R2)', async () => {
+    // task-3 review R2: with a seeded value and NO declared efforts the
+    // unmatched select value used to fall back visually to Automatic; the
+    // stored value must render as its own labelled option and stay selected.
+    const { controller, props, view } = await mountCard({
+      config: { ...PAIRED, reasoningEffort: 'high' },
+    }) // no reasoning record → tagged error → unavailable
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('unavailable')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
+    expect(select.value).toBe('high')
+    const labels = within(select).getAllByRole('option').map(option => option.textContent)
+    expect(labels).toEqual([en.reasoningEffortAuto, en.reasoningEffortStored.replace('{id}', 'high')])
+    expect(screen.getByText(en.reasoningEffortUnavailable)).toBeTruthy()
+  })
+
+  it('shows a seeded effort that is not declared as its own selected option (R2 stale)', async () => {
+    const { controller, props, view } = await mountCard({
+      config: { ...PAIRED, reasoningEffort: 'ultra' },
+      reasoning: { [KEY]: { efforts: [{ id: 'low', name: 'Low' }] } },
+    })
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
+    expect(select.value).toBe('ultra')
+    const labels = within(select).getAllByRole('option').map(option => option.textContent)
+    expect(labels).toEqual([en.reasoningEffortAuto, en.reasoningEffortStored.replace('{id}', 'ultra'), 'Low'])
+    expect(screen.getByText(en.reasoningEffortStale)).toBeTruthy()
+  })
+
+  it('clears a seeded effort to automatic from the unavailable state with exactly { reasoningEffort: "" } (R2)', async () => {
+    // The clear must ride a REAL value change: the stored option is selected,
+    // so choosing Automatic is a genuine change (not a forced change on the
+    // already-selected auto option) and saves exactly the '' override.
+    const { controller, scripted, props, view } = await mountCard({
+      config: { ...PAIRED, reasoningEffort: 'high' },
+    }) // capability unavailable — only auto + the stored option exist
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('unavailable')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
+    expect(select.value).toBe('high')
+    fireEvent.change(select, { target: { value: '' } })
+    view.rerender(<AdvisorCard {...props} />)
+    expect((screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement).value).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    expect(scripted.call).toHaveBeenCalledWith('/api', 'advisor/set', {
+      args: { patch: { reasoningEffort: '' } },
+    })
   })
 
   it('writes the selected effort through the save payload', async () => {
