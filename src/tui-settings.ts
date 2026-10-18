@@ -135,9 +135,10 @@ export const TUI_SETTINGS_SECTIONS = 'tuiSettingsSections'
 export const ADVISOR_TUI_SETTINGS_NS = 'advisor'
 
 /** The declared "Advisor" section for the dsh-tui `/settings` screen: the
- * six §5.1 keys (provider/model/immuneTurns/maxDeltaMessages/maxTokens/
- * proseFallback) with zh/en labels + hints. Field paths are single-element
- * §5.1 flat keys, so staged edits map 1:1 onto the namespace `mutate` paths. */
+ * seven §5.1 keys (provider/model/immuneTurns/maxDeltaMessages/maxTokens/
+ * proseFallback/reasoningEffort) with zh/en labels + hints. Field paths are
+ * single-element §5.1 flat keys, so staged edits map 1:1 onto the namespace
+ * `mutate` paths. */
 export const ADVISOR_TUI_SETTINGS_SECTION: TuiSettingsSection = {
   ns: ADVISOR_SETTINGS_NAMESPACE,
   title: 'Advisor',
@@ -203,6 +204,22 @@ export const ADVISOR_TUI_SETTINGS_SECTION: TuiSettingsSection = {
       hintDescriptions: {
         zh: '未找到 JSON 帧时，将散文回复作为低严重级建议投递（默认关闭）。',
         en: 'When no JSON frame is found, deliver the prose reply as a low-severity note (off by default).',
+      },
+    },
+    {
+      // RD-5 (plan dsh-advisor-reasoning-effort): a static section cannot list
+      // per-model effort options, so the field is free text — empty = the
+      // automatic smallest declared effort, and an id the model does not
+      // declare falls back to that smallest effort (the runtime never sends an
+      // undeclared id).
+      path: ['reasoningEffort'],
+      kind: 'text',
+      label: 'Thinking effort',
+      descriptions: { zh: '思考权重', en: 'Thinking effort' },
+      hint: 'Leave empty for automatic — the smallest thinking effort the selected model declares; values are the effort ids that model’s adapter declares.',
+      hintDescriptions: {
+        zh: '留空为自动——所选模型声明的最小思考权重；取值为该模型适配器声明的 effort id。',
+        en: 'Leave empty for automatic — the smallest thinking effort the selected model declares; values are the effort ids that model’s adapter declares.',
       },
     },
   ],

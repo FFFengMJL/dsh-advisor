@@ -73,8 +73,14 @@ function bindSnapshotSelector<T>(w: HostObservable<T>): SnapshotSelectorHook<T> 
 
 // The synthesized `t` seat's key domain is the namespace dictionary union
 // plus the shared `common` vocabulary; the specs only ever call the card's
-// own keys, so the en-lookup casts the key.
-const t: AdvisorCardProps['t'] = key => en[key as keyof typeof en]
+// own keys, so the en-lookup casts the key. The stand-in mirrors the real
+// seat's `{name}` template interpolation.
+const t: AdvisorCardProps['t'] = (key, params) => {
+  const template = en[key as keyof typeof en]
+  return params === undefined
+    ? template
+    : template.replace(/\{(\w+)\}/g, (_match, name: string) => String(params[name] ?? ''))
+}
 
 /**
  * Full card props the renderer would bind: the registrant's business inject
@@ -155,6 +161,7 @@ interface Scripted {
   describe: ReturnType<typeof vi.fn>
   listConfigurableProviders: ReturnType<typeof vi.fn>
   modelCatalog: ReturnType<typeof vi.fn>
+  modelReasoning: ReturnType<typeof vi.fn>
 }
 
 /**
@@ -163,7 +170,10 @@ interface Scripted {
  * — the gateway channel replaces it), and the fake `rpc.call` serves the
  * `advisor/get` + `advisor/set` endpoints against a mutable effective config.
  * `config: null` = the gateway is unreachable (get fails) — the C-1/KD-G5
- * notice path.
+ * notice path. `reasoning` maps a `${provider}\u0000${model}` key to the T2
+ * capability payload served for `advisor/modelReasoning` (absent key → the
+ * tagged unavailable error); `reasoningHandler` overrides that record with a
+ * custom call-through (used to hold the lookup unsettled).
  */
 function scriptedApi(options: {
   config?: AdvisorConfigView | null
@@ -171,6 +181,8 @@ function scriptedApi(options: {
   entries?: LlmConfigurableProvider[]
   groups?: ModelCatalog['groups']
   writable?: boolean
+  reasoning?: Record<string, unknown>
+  reasoningHandler?: (args: { provider: string; model: string }) => Promise<RpcResult<unknown>>
 } = {}): Scripted {
   const others = options.namespaces ?? [deepseekNs(), piAiNs()]
   const entries = options.entries ?? [DEEPSEEK, OPENAI, ZOMBIE]
@@ -197,10 +209,18 @@ function scriptedApi(options: {
     current = { ...current, ...payload.args.patch }
     return Promise.resolve(okResult({ config: current }))
   })
+  const modelReasoning = vi.fn((payload: { args: { provider: string; model: string } }) => {
+    if (options.reasoningHandler !== undefined) return options.reasoningHandler(payload.args)
+    const key = `${payload.args.provider}\u0000${payload.args.model}`
+    const response = options.reasoning?.[key]
+      ?? { error: { tag: 'advisor/model-reasoning-unavailable', message: `test: ${key} declares no reasoning efforts` } }
+    return Promise.resolve(okResult(response))
+  })
   const call = vi.fn((channel: string, endpoint: string, payload: unknown) => {
     if (channel !== '/api') throw new Error(`test: unexpected channel ${channel}`)
     if (endpoint === 'advisor/get') return get()
     if (endpoint === 'advisor/set') return set(payload as { args: { patch: Record<string, unknown> } })
+    if (endpoint === 'advisor/modelReasoning') return modelReasoning(payload as { args: { provider: string; model: string } })
     throw new Error(`test: unexpected endpoint ${endpoint}`)
   })
   return {
@@ -210,7 +230,7 @@ function scriptedApi(options: {
       session: { modelCatalog },
     },
     rpc: { call } as unknown as ClientConnectionRpc,
-    call, get, set, describe, listConfigurableProviders, modelCatalog,
+    call, get, set, describe, listConfigurableProviders, modelCatalog, modelReasoning,
   }
 }
 
@@ -926,5 +946,191 @@ describe('AdvisorCard', () => {
     expect(screen.queryByText(`${en.loadFailed}:`)).toBeNull()
     expect(screen.getByLabelText(en.provider)).toBeTruthy()
     expect(screen.getByLabelText(en.model)).toBeTruthy()
+  })
+})
+
+describe('AdvisorCard thinking-effort select (plan dsh-advisor-reasoning-effort, task 3)', () => {
+  const KEY = 'deepseek-official\u0000ds-a'
+  const PAIRED = { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 }
+
+  it('renders the thinking-effort select next to the model select in the pair grid', async () => {
+    await mountCard({ config: { ...PAIRED }, reasoning: { [KEY]: { efforts: [{ id: 'low', name: 'Low' }] } } })
+    const modelSelect = screen.getByLabelText(en.model)
+    const effortSelect = screen.getByLabelText(en.reasoningEffort)
+    // Each select sits in its own .field; both fields share the .pairFields
+    // grid wrapper.
+    const pairGrid = modelSelect.parentElement?.parentElement
+    expect(pairGrid).toBe(effortSelect.parentElement?.parentElement)
+    expect(pairGrid?.className).toContain('pairFields')
+  })
+
+  it('offers the auto option plus the declared effort names (falling back to the id)', async () => {
+    const { controller, props, view } = await mountCard({
+      config: { ...PAIRED },
+      reasoning: { [KEY]: { efforts: [{ id: 'low', name: '' }, { id: 'high', name: 'High' }] } },
+    })
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
+    const labels = within(select).getAllByRole('option').map(option => option.textContent)
+    expect(labels).toEqual([en.reasoningEffortAuto, 'low', 'High'])
+    expect(screen.getByText(en.reasoningEffortHint)).toBeTruthy()
+  })
+
+  it('degrades to only the auto option with the unavailable hint when the model declares no efforts', async () => {
+    const { controller, props, view } = await mountCard({ config: { ...PAIRED } }) // no reasoning record → tagged error
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('unavailable')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
+    const labels = within(select).getAllByRole('option').map(option => option.textContent)
+    expect(labels).toEqual([en.reasoningEffortAuto])
+    expect(screen.getByText(en.reasoningEffortUnavailable)).toBeTruthy()
+    expect(screen.queryByText(en.reasoningEffortHint)).toBeNull()
+  })
+
+  it('warns when the stored effort is not among the resolved options without blocking Save', async () => {
+    const { controller, props, view } = await mountCard({
+      config: { ...PAIRED, reasoningEffort: 'ultra' },
+      reasoning: { [KEY]: { efforts: [{ id: 'low', name: 'Low' }] } },
+    })
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    expect(screen.getByText(en.reasoningEffortStale)).toBeTruthy()
+    // The stale hint does not gate Save: stage another edit → save enabled
+    // (keep the stored value or reselect — same contract as staleModel).
+    fireEvent.change(screen.getByLabelText(en.systemPrompt), { target: { value: 'x' } })
+    view.rerender(<AdvisorCard {...props} />)
+    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('shows a seeded effort as its own selected option when the capability is unavailable (R2)', async () => {
+    // task-3 review R2: with a seeded value and NO declared efforts the
+    // unmatched select value used to fall back visually to Automatic; the
+    // stored value must render as its own labelled option and stay selected.
+    const { controller, props, view } = await mountCard({
+      config: { ...PAIRED, reasoningEffort: 'high' },
+    }) // no reasoning record → tagged error → unavailable
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('unavailable')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
+    expect(select.value).toBe('high')
+    const labels = within(select).getAllByRole('option').map(option => option.textContent)
+    expect(labels).toEqual([en.reasoningEffortAuto, en.reasoningEffortStored.replace('{id}', 'high')])
+    expect(screen.getByText(en.reasoningEffortUnavailable)).toBeTruthy()
+  })
+
+  it('shows a seeded effort that is not declared as its own selected option (R2 stale)', async () => {
+    const { controller, props, view } = await mountCard({
+      config: { ...PAIRED, reasoningEffort: 'ultra' },
+      reasoning: { [KEY]: { efforts: [{ id: 'low', name: 'Low' }] } },
+    })
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
+    expect(select.value).toBe('ultra')
+    const labels = within(select).getAllByRole('option').map(option => option.textContent)
+    expect(labels).toEqual([en.reasoningEffortAuto, en.reasoningEffortStoredStale.replace('{id}', 'ultra'), 'Low'])
+    expect(screen.getByText(en.reasoningEffortStale)).toBeTruthy()
+  })
+
+  it('clears a seeded effort to automatic from the unavailable state with exactly { reasoningEffort: "" } (R2)', async () => {
+    // The clear must ride a REAL value change: the stored option is selected,
+    // so choosing Automatic is a genuine change (not a forced change on the
+    // already-selected auto option) and saves exactly the '' override.
+    const { controller, scripted, props, view } = await mountCard({
+      config: { ...PAIRED, reasoningEffort: 'high' },
+    }) // capability unavailable — only auto + the stored option exist
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('unavailable')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
+    expect(select.value).toBe('high')
+    fireEvent.change(select, { target: { value: '' } })
+    view.rerender(<AdvisorCard {...props} />)
+    expect((screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement).value).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    expect(scripted.call).toHaveBeenCalledWith('/api', 'advisor/set', {
+      args: { patch: { reasoningEffort: '' } },
+    })
+  })
+
+  it('writes the selected effort through the save payload', async () => {
+    const { controller, scripted, props, view } = await mountCard({
+      config: { ...PAIRED },
+      reasoning: { [KEY]: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } },
+    })
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    fireEvent.change(screen.getByLabelText(en.reasoningEffort), { target: { value: 'high' } })
+    view.rerender(<AdvisorCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    expect(scripted.call).toHaveBeenCalledWith('/api', 'advisor/set', {
+      args: { patch: { reasoningEffort: 'high' } },
+    })
+  })
+
+  it("clears a seeded effort back to automatic through an explicit '' write", async () => {
+    const { controller, scripted, props, view } = await mountCard({
+      config: { ...PAIRED, reasoningEffort: 'low' },
+      reasoning: { [KEY]: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } },
+    })
+    await waitFor(() => {
+      expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+    })
+    view.rerender(<AdvisorCard {...props} />)
+    expect((screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement).value).toBe('low')
+    fireEvent.change(screen.getByLabelText(en.reasoningEffort), { target: { value: '' } })
+    view.rerender(<AdvisorCard {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await waitFor(() => expect(scripted.set).toHaveBeenCalled())
+    expect(scripted.call).toHaveBeenCalledWith('/api', 'advisor/set', {
+      args: { patch: { reasoningEffort: '' } },
+    })
+  })
+
+  it('renders a stored effort as a plain option while the capability lookup is still unsettled', async () => {
+    // load() clears the capability cache and re-probes on every save, so the
+    // stored value is unmatched during that window — it must not read as
+    // "unavailable": a pending lookup says nothing about the declaration.
+    const { controller, props, view } = await mountCard({
+      config: { ...PAIRED, reasoningEffort: 'low' },
+      reasoningHandler: () => new Promise<RpcResult<unknown>>(() => {}),
+    })
+    expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('loading')
+    view.rerender(<AdvisorCard {...props} />)
+    const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
+    expect(select.disabled).toBe(false)
+    expect(select.value).toBe('low')
+    const labels = within(select).getAllByRole('option').map(option => option.textContent)
+    expect(labels).toEqual([en.reasoningEffortAuto, en.reasoningEffortStoredPending.replace('{id}', 'low')])
+    expect(screen.getByText(en.reasoningEffortHint)).toBeTruthy()
+    expect(screen.queryByText(en.reasoningEffortUnavailable)).toBeNull()
+  })
+
+  it('disables the effort select while the card is read-only and while the pair is incomplete', async () => {
+    await mountCard({ config: { ...PAIRED }, writable: false })
+    expect((screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement).disabled).toBe(true)
+    cleanup()
+    // No model → no `${provider}\u0000${model}` capability key → nothing to
+    // select, so the select is inert (the model select is gated the same way).
+    await mountCard({
+      config: { enabled: true, provider: 'deepseek-official', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+    })
+    expect((screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement).disabled).toBe(true)
   })
 })

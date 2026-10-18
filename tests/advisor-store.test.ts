@@ -166,13 +166,18 @@ interface Scripted {
   describe: ReturnType<typeof vi.fn>
   listConfigurableProviders: ReturnType<typeof vi.fn>
   modelCatalog: ReturnType<typeof vi.fn>
+  modelReasoning: ReturnType<typeof vi.fn>
 }
 
 /**
  * Build the scripted wire. `config: null` = the gateway channel is down (get
  * fails) — the C-1/KD-G5 notice path. The fake `set` merges the patch into
  * the effective config exactly like the host gateway (merge → new composed
- * config), so a follow-up get/seed reflects the write.
+ * config), so a follow-up get/seed reflects the write. `reasoning` maps a
+ * `${provider}\u0000${model}` key to the T2 capability payload served for
+ * `advisor/modelReasoning` (absent key → the tagged unavailable error);
+ * `reasoningHandler` overrides the record with a custom call-through (deferred
+ * resolutions, transport failures).
  */
 function scriptedApi(options: {
   config?: AdvisorConfigView | null
@@ -180,6 +185,8 @@ function scriptedApi(options: {
   entries?: LlmConfigurableProvider[]
   groups?: ModelCatalog['groups']
   writable?: boolean
+  reasoning?: Record<string, unknown>
+  reasoningHandler?: (args: { provider: string; model: string }) => RpcResult<unknown> | Promise<RpcResult<unknown>>
 } = {}): Scripted {
   const others = options.namespaces ?? [deepseekNs(), piAiNs()]
   const entries = options.entries ?? [DEEPSEEK, OPENAI, ZOMBIE, ORPHAN, EMPTY, EMPTYLIST]
@@ -206,10 +213,20 @@ function scriptedApi(options: {
     current = { ...current, ...payload.args.patch }
     return Promise.resolve(okResult({ config: current }))
   })
+  const modelReasoning = vi.fn((payload: { args: { provider: string; model: string } }) => {
+    if (options.reasoningHandler !== undefined) {
+      return Promise.resolve(options.reasoningHandler(payload.args))
+    }
+    const key = `${payload.args.provider}\u0000${payload.args.model}`
+    const response = options.reasoning?.[key]
+      ?? { error: { tag: 'advisor/model-reasoning-unavailable', message: `test: ${key} declares no reasoning efforts` } }
+    return Promise.resolve(okResult(response))
+  })
   const call = vi.fn((channel: string, endpoint: string, payload: unknown) => {
     if (channel !== '/api') throw new Error(`test: unexpected channel ${channel}`)
     if (endpoint === 'advisor/get') return get()
     if (endpoint === 'advisor/set') return set(payload as { args: { patch: Record<string, unknown> } })
+    if (endpoint === 'advisor/modelReasoning') return modelReasoning(payload as { args: { provider: string; model: string } })
     throw new Error(`test: unexpected endpoint ${endpoint}`)
   })
   return {
@@ -219,7 +236,7 @@ function scriptedApi(options: {
       session: { modelCatalog },
     },
     rpc: { call } as unknown as ClientConnectionRpc,
-    call, get, set, describe, listConfigurableProviders, modelCatalog,
+    call, get, set, describe, listConfigurableProviders, modelCatalog, modelReasoning,
   }
 }
 
@@ -572,11 +589,11 @@ describe('apply patch + seed (gateway channel semantics)', () => {
     const { remote, rpc, describe, call } = scriptedApi()
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
-    // The Once is registered AFTER load so it targets the set call, not the
-    // load's get call.
-    call.mockRejectedValueOnce(new Error('transport down'))
     store.setProvider('deepseek-official')
-    store.setModel('ds-a')
+    store.setModel('ds-a') // fires the modelReasoning capability call synchronously
+    // The Once is registered AFTER the edits so it targets the set call, not
+    // the load's get call or the setModel-triggered capability call.
+    call.mockRejectedValueOnce(new Error('transport down'))
     await store.apply()
     const { applyState, draft } = store.store.getSnapshot()
     expect(applyState.kind).toBe('error')
@@ -1237,6 +1254,256 @@ describe('card scenario (store-level load/save over the gateway channel)', () =>
     // Apply after discard: nothing differs from the seed → no second write.
     await store.apply()
     expect(call.mock.calls.filter(callArgs => callArgs[1] === 'advisor/set')).toHaveLength(1)
+    expect(store.store.getSnapshot().applyState.kind).toBe('saved')
+  })
+})
+
+describe('thinking-effort capability (plan dsh-advisor-reasoning-effort, task 3)', () => {
+  const EFFORTS = { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High', description: 'Deep' }] }
+  const KEY = 'deepseek-official\u0000ds-a'
+  const PAIRED = { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 }
+
+  it('fetches the capability once for the stored pair after load and caches it by key', async () => {
+    const { remote, rpc, modelReasoning } = scriptedApi({ config: { ...PAIRED }, reasoning: { [KEY]: EFFORTS } })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    expect(modelReasoning).toHaveBeenCalledTimes(1)
+    expect(modelReasoning).toHaveBeenCalledWith({ args: { provider: 'deepseek-official', model: 'ds-a' } })
+    await store.ensureModelReasoning('deepseek-official', 'ds-a') // cached — no refetch
+    const state = store.store.getSnapshot()
+    expect(state.modelReasoningState[KEY]).toBe('ready')
+    expect(state.modelReasoning[KEY]).toEqual(EFFORTS.efforts)
+    expect(modelReasoning).toHaveBeenCalledTimes(1)
+  })
+
+  it('shares one in-flight capability fetch per key', async () => {
+    let release!: (value: RpcResult<unknown>) => void
+    const gate = new Promise<RpcResult<unknown>>((resolve) => { release = resolve })
+    const { remote, rpc, modelReasoning } = scriptedApi({ reasoningHandler: () => gate })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    const first = store.ensureModelReasoning('p', 'm')
+    const second = store.ensureModelReasoning('p', 'm')
+    expect(modelReasoning).toHaveBeenCalledTimes(1)
+    release(okResult({ efforts: [{ id: 'low', name: 'Low' }] }))
+    await first
+    await second
+    expect(store.store.getSnapshot().modelReasoningState['p\u0000m']).toBe('ready')
+    expect(store.store.getSnapshot().modelReasoning['p\u0000m']).toEqual([{ id: 'low', name: 'Low' }])
+  })
+
+  it('a model switch resolves the new key and keeps the previous key cached', async () => {
+    const keyB = 'deepseek-official\u0000ds-b'
+    const { remote, rpc, modelReasoning } = scriptedApi({
+      config: { ...PAIRED },
+      reasoning: { [KEY]: EFFORTS, [keyB]: { efforts: [{ id: 'off', name: 'Off' }] } },
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    store.setModel('ds-b')
+    await vi.waitFor(() => {
+      expect(store.store.getSnapshot().modelReasoningState[keyB]).toBe('ready')
+    })
+    expect(modelReasoning).toHaveBeenCalledTimes(2)
+    const state = store.store.getSnapshot()
+    expect(state.modelReasoning[KEY]).toEqual(EFFORTS.efforts)
+    expect(state.modelReasoning[keyB]).toEqual([{ id: 'off', name: 'Off' }])
+  })
+
+  it('re-resolves the preserved draft pair on a load() invalidation (draft on B, seed on A — R1)', async () => {
+    // task-3 review R1: seed A, the draft switches to B, then a pushed
+    // invalidation reloads BEFORE the save — the host config still identifies
+    // A while the draft intentionally stays on B. The reload clears every
+    // capability entry, so load() must re-resolve BOTH the seed pair (the
+    // Discard target) and the preserved draft pair.
+    const keyB = 'deepseek-official\u0000ds-b'
+    const { remote, rpc, modelReasoning } = scriptedApi({
+      config: { ...PAIRED },
+      reasoning: {
+        [KEY]: { efforts: [{ id: 'low', name: 'Low' }] },
+        [keyB]: { efforts: [{ id: 'high', name: 'High' }] },
+      },
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    store.setModel('ds-b')
+    await vi.waitFor(() => {
+      expect(store.store.getSnapshot().modelReasoningState[keyB]).toBe('ready')
+    })
+    expect(draftOf(store).model).toBe('ds-b')
+
+    await store.load()
+    await vi.waitFor(() => {
+      const state = store.store.getSnapshot()
+      expect(state.modelReasoningState[KEY]).toBe('ready')
+      expect(state.modelReasoningState[keyB]).toBe('ready')
+    })
+    expect(draftOf(store).model).toBe('ds-b') // the draft edit survives
+    expect(modelReasoning).toHaveBeenCalledTimes(4) // A, B, then A + B again
+    const state = store.store.getSnapshot()
+    expect(state.modelReasoning[KEY]).toEqual([{ id: 'low', name: 'Low' }])
+    expect(state.modelReasoning[keyB]).toEqual([{ id: 'high', name: 'High' }])
+  })
+
+  it('marks the capability unavailable on the definitive no-efforts verdict without polluting the options', async () => {
+    const { remote, rpc } = scriptedApi({ config: { ...PAIRED } }) // no reasoning record → tagged unavailable
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    const state = store.store.getSnapshot()
+    expect(state.modelReasoningState[KEY]).toBe('unavailable')
+    expect(Object.hasOwn(state.modelReasoning, KEY)).toBe(false)
+  })
+
+  it('latches nothing on a lookup failure: a -failed tag, a transport failure and a throw all leave no state entry', async () => {
+    // Only the DEFINITIVE `advisor/model-reasoning-unavailable` tag is a
+    // verdict: a failure must not render as a permanent "declares nothing" —
+    // the marker is dropped so the next ensureModelReasoning re-probes (the
+    // runtime side of this plan never caches a resolution failure either).
+    let answer: RpcResult<unknown> = okResult({
+      error: { tag: 'advisor/model-reasoning-failed', message: 'capability lookup blew up' },
+    })
+    const { remote, rpc, modelReasoning } = scriptedApi({
+      config: { ...PAIRED },
+      reasoningHandler: () => answer,
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.ensureModelReasoning('deepseek-official', 'ds-a')
+    expect(modelReasoning).toHaveBeenCalledTimes(1)
+    expect(Object.hasOwn(store.store.getSnapshot().modelReasoningState, KEY)).toBe(false)
+    expect(Object.hasOwn(store.store.getSnapshot().modelReasoning, KEY)).toBe(false)
+
+    // …so the next probe runs again (nothing latched) and can now resolve.
+    answer = okResult({ efforts: [{ id: 'low', name: 'Low' }] })
+    await store.ensureModelReasoning('deepseek-official', 'ds-a')
+    expect(modelReasoning).toHaveBeenCalledTimes(2)
+    expect(store.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+
+    const failing = scriptedApi({ config: { ...PAIRED }, reasoningHandler: () => failResult('capability channel down') })
+    const store2 = new AdvisorSettingsStore(failing.remote, failing.rpc, schema)
+    await store2.ensureModelReasoning('deepseek-official', 'ds-a')
+    expect(Object.hasOwn(store2.store.getSnapshot().modelReasoningState, KEY)).toBe(false)
+    expect(Object.hasOwn(store2.store.getSnapshot().modelReasoning, KEY)).toBe(false)
+
+    const throwing = scriptedApi({
+      config: { ...PAIRED },
+      reasoningHandler: () => { throw new Error('capability lookup blew up') },
+    })
+    const store3 = new AdvisorSettingsStore(throwing.remote, throwing.rpc, schema)
+    await store3.ensureModelReasoning('deepseek-official', 'ds-a')
+    expect(Object.hasOwn(store3.store.getSnapshot().modelReasoningState, KEY)).toBe(false)
+    expect(Object.hasOwn(store3.store.getSnapshot().modelReasoning, KEY)).toBe(false)
+  })
+
+  it('load() invalidates the capability caches and refetches the stored pair', async () => {
+    const { remote, rpc, modelReasoning } = scriptedApi({ config: { ...PAIRED }, reasoning: { [KEY]: EFFORTS } })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    expect(store.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+    expect(modelReasoning).toHaveBeenCalledTimes(1)
+    await store.load()
+    expect(modelReasoning).toHaveBeenCalledTimes(2)
+    expect(store.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+    expect(store.store.getSnapshot().modelReasoning[KEY]).toEqual(EFFORTS.efforts)
+  })
+
+  it('a fetch started before a load() invalidation caches nothing (mid-flight staleness)', async () => {
+    const pending: Array<(value: RpcResult<unknown>) => void> = []
+    const { remote, rpc } = scriptedApi({
+      config: { ...PAIRED },
+      reasoningHandler: () => new Promise<RpcResult<unknown>>((resolve) => { pending.push(resolve) }),
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    expect(store.store.getSnapshot().modelReasoningState[KEY]).toBe('loading')
+    const reloading = store.load()
+    await vi.waitFor(() => { expect(pending).toHaveLength(2) })
+    // The stale fetch (started before the invalidation) resolves first: it
+    // must not cache into the cleared state.
+    pending[0]!(okResult({ efforts: [{ id: 'stale', name: 'Stale' }] }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(Object.hasOwn(store.store.getSnapshot().modelReasoning, KEY)).toBe(false)
+    expect(store.store.getSnapshot().modelReasoningState[KEY]).toBe('loading')
+    pending[1]!(okResult({ efforts: [{ id: 'fresh', name: 'Fresh' }] }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(store.store.getSnapshot().modelReasoning[KEY]).toEqual([{ id: 'fresh', name: 'Fresh' }])
+    expect(store.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+    await reloading
+  })
+
+  it('a stale settle leaves a successor in-flight marker alone (qc3 S-1)', async () => {
+    // Timeline: fetch A is still in flight when load() clears the in-flight
+    // map and registers fetch B for the SAME key; A then settles stale and
+    // must not clear B's marker. The marker is the invariant under test —
+    // B's 'loading' state already forces a later call to return early, so the
+    // private dedupe map is read directly (no public readback exists).
+    const pending: Array<(value: RpcResult<unknown>) => void> = []
+    const { remote, rpc, modelReasoning } = scriptedApi({
+      config: { ...PAIRED },
+      reasoningHandler: () => new Promise<RpcResult<unknown>>((resolve) => { pending.push(resolve) }),
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load() // fetch A — never settles until released below
+    const inflight = (store as unknown as { inflightReasoning: Map<string, Promise<void>> }).inflightReasoning
+    const fetchA = inflight.get(KEY)
+    await store.load() // clears the map, then registers fetch B for the same key
+    const fetchB = inflight.get(KEY)
+    expect(pending).toHaveLength(2)
+    expect(fetchB).not.toBe(fetchA)
+
+    pending[0]!(okResult({ efforts: [{ id: 'stale', name: 'Stale' }] })) // A settles stale
+    await fetchA
+    expect(inflight.get(KEY)).toBe(fetchB) // B's marker survives A's stale settle
+
+    pending[1]!(okResult({ efforts: [{ id: 'fresh', name: 'Fresh' }] }))
+    await fetchB
+    expect(modelReasoning).toHaveBeenCalledTimes(2) // no duplicate read-only RPC
+    expect(store.store.getSnapshot().modelReasoning[KEY]).toEqual([{ id: 'fresh', name: 'Fresh' }])
+  })
+
+  it('seeds the draft reasoningEffort from the resolved config; an absent key reads as automatic', async () => {
+    const seeded = scriptedApi({ config: { ...PAIRED, reasoningEffort: 'low' } })
+    const store = new AdvisorSettingsStore(seeded.remote, seeded.rpc, schema)
+    await store.load()
+    expect(draftOf(store).reasoningEffort).toBe('low')
+
+    const plain = scriptedApi({ config: { ...PAIRED } })
+    const store2 = new AdvisorSettingsStore(plain.remote, plain.rpc, schema)
+    await store2.load()
+    expect(draftOf(store2).reasoningEffort).toBeUndefined()
+  })
+
+  it('writes an edited reasoningEffort key through the patch', async () => {
+    const { remote, rpc, call } = scriptedApi({ config: { ...PAIRED } })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    store.setReasoningEffort('high')
+    expect(store.store.getSnapshot().dirty).toBe(true)
+    await store.apply()
+    expect(call).toHaveBeenCalledWith('/api', 'advisor/set', {
+      args: { patch: { reasoningEffort: 'high' } },
+    })
+  })
+
+  it("writes an explicit '' when the draft clears a seeded reasoningEffort", async () => {
+    const { remote, rpc, call } = scriptedApi({ config: { ...PAIRED, reasoningEffort: 'high' } })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    expect(draftOf(store).reasoningEffort).toBe('high')
+    store.setReasoningEffort('') // '' = automatic
+    expect(store.store.getSnapshot().dirty).toBe(true)
+    await store.apply()
+    expect(call).toHaveBeenCalledWith('/api', 'advisor/set', {
+      args: { patch: { reasoningEffort: '' } },
+    })
+  })
+
+  it('stays clean when the auto selection matches an unseeded config (no churn)', async () => {
+    const { remote, rpc, set } = scriptedApi({ config: { ...PAIRED } })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    store.setReasoningEffort('')
+    expect(store.store.getSnapshot().dirty).toBe(false)
+    await store.apply()
+    expect(set).not.toHaveBeenCalled()
     expect(store.store.getSnapshot().applyState.kind).toBe('saved')
   })
 })

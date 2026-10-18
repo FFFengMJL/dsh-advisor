@@ -490,6 +490,15 @@ export interface AdvisorComposedConfig {
    * {@link AdvisorComposedConfig.maxTokens}.
    */
   readonly proseFallback?: boolean
+  /**
+   * Reasoning effort for one advisor call (plan dsh-advisor-reasoning-effort
+   * T1/RD-1). Present when the composed read carries a non-empty key; ABSENT
+   * means AUTOMATIC — the runtime sends the smallest effort the resolved model
+   * declares, and a model declaring none sends no option at all. Same presence
+   * rule as {@link AdvisorComposedConfig.maxTokens}: an absent key renders no
+   * line, never an invented default.
+   */
+  readonly reasoningEffort?: string
   /** True when the composed config carries a custom system prompt ("" = unset). */
   readonly systemPromptSet: boolean
   /**
@@ -546,6 +555,11 @@ export function advisorConfigText(config: AdvisorComposedConfig): string {
   // line, matching the Model/Reason lines' conditional style.
   if (config.maxTokens !== undefined) lines.push(`maxTokens: ${config.maxTokens}`)
   if (config.proseFallback !== undefined) lines.push(`proseFallback: ${config.proseFallback ? 'on' : 'off'}`)
+  // The eighth key (plan dsh-advisor-reasoning-effort T1) follows the same
+  // presence rule: an absent key means AUTOMATIC (the smallest effort the
+  // model declares), so there is no value to print — rendering 'auto' for it
+  // would invent a value the composed read never carried.
+  if (config.reasoningEffort !== undefined) lines.push(`reasoningEffort: ${config.reasoningEffort}`)
   // The set-vs-default signal is systemPromptSet, NOT the summary: a custom
   // prompt whose first line is empty (e.g. '\nsecond line') summarizes to ''
   // but must still read as set, not <default> (qc2 F-3).

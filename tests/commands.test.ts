@@ -592,6 +592,19 @@ describe('advisorConfigText (the /advisor config surface, composed session-less 
     expect(text).not.toContain('proseFallback:')
   })
 
+  it('renders the reasoningEffort line when the composed config carries it (eighth key)', () => {
+    const text = advisorConfigText(baseConfig({ enabled: true, reasoningEffort: 'high' }))
+    expect(text).toContain('reasoningEffort: high')
+  })
+
+  it('omits the reasoningEffort line when the composed config does not carry it (absent = automatic)', () => {
+    // An absent/empty value means AUTOMATIC (the smallest effort the model
+    // declares) — the renderer never invents an 'auto' value for it (same
+    // presence rule as maxTokens/proseFallback).
+    const text = advisorConfigText(baseConfig({ enabled: true }))
+    expect(text).not.toContain('reasoningEffort')
+  })
+
   it('renders <default> when the system prompt is unset', () => {
     const text = advisorConfigText(baseConfig({ enabled: true }))
     expect(text).toContain('systemPrompt: <default>')
@@ -852,6 +865,18 @@ describe('apply wiring — /advisor config tuiSettingsAvailable reflects the tui
     if (result.kind === 'success') {
       expect(result.text).toContain('Edit: TUI /settings screen (Advisor section, dsh-tui ≥ v0.8.0) or ~/.dsh/profiles/<profile>/cordis.patch.yml (advisor plugin row)')
     }
+  })
+
+  it('renders the persisted reasoningEffort through the real apply wiring (getConfig reads the resolved config)', () => {
+    // The eighth key rides the SAME resolved-config read the web card serves:
+    // a persisted `reasoningEffort` must reach the `/advisor config` readback
+    // without a second state store.
+    const registry = new FakeRegistry()
+    const ctx = makeConfigApplyCtx([], registry, false)
+    apply(ctx, { ...entryConfig(), reasoningEffort: 'high' })
+    const result = invoke(registry.definitions[0]!.handler, 'config')
+    expect(result.kind).toBe('success')
+    if (result.kind === 'success') expect(result.text).toContain('reasoningEffort: high')
   })
 })
 
