@@ -204,9 +204,25 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // exists; the gateway resolves it lazily per request, so a gateway on a
   // fiber that lost the service-key race (or that never claimed the reviewer
   // role) answers `advisor/unavailable` in data and stays inert.
+  //
+  // T2 (plan dsh-advisor-reasoning-effort): the read-only capability endpoint
+  // (`advisor/modelReasoning`) is handed the app-root `resolveModelInfo` below
+  // — the SAME lookup the model validation uses. The arrow keeps the method's
+  // receiver and defers every lookup to request time; a fiber without an
+  // app-root llm simply answers `advisor/model-reasoning-unavailable`.
+  //
+  // n4 root-cause (host-observed NO_ADAPTER): this plugin's ctx may live in an
+  // isolated scope whose local llm service lacks the provider adapters (adapter
+  // registrations live on the application root's LlmRuntime). The APPLICATION
+  // ROOT's llm serves the advisor model calls (ensureRuntime), the
+  // `/advisor model set` validation lookups (spec §5.3), and the capability
+  // query.
+  const appRootLlm = (): typeof ctx.llm =>
+    ((ctx as unknown as { root?: { get?: (k: string) => unknown } }).root?.get?.('llm') as typeof ctx.llm) ?? ctx.llm
   let sessionControl: AdvisorSessionGatewayFace | undefined
   try {
-    new AdvisorConfigGateway(ctx, bridge, () => sessionControl)
+    new AdvisorConfigGateway(ctx, bridge, () => sessionControl, (provider, model, signal) =>
+      appRootLlm().resolveModelInfo(provider, model, signal))
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('advisor').debug('advisor gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
@@ -316,13 +332,6 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // safe wrapper (qc2 W-1 — a throwing resolver must not break the
   // session/event handler or `/advisor status`).
   const effectiveConfig = (sessionId: string): ResolvedAdvisorConfig => safeEffective(sessionId)
-  // n4 root-cause (host-observed NO_ADAPTER): this plugin's ctx may live in an
-  // isolated scope whose local llm service lacks the provider adapters (adapter
-  // registrations live on the application root's LlmRuntime). The APPLICATION
-  // ROOT's llm serves BOTH the advisor model calls (ensureRuntime) and the
-  // `/advisor model set` validation lookups (spec §5.3).
-  const appRootLlm = (): typeof ctx.llm =>
-    ((ctx as unknown as { root?: { get?: (k: string) => unknown } }).root?.get?.('llm') as typeof ctx.llm) ?? ctx.llm
   // Spec §5.3 — model-validation teardown signal: fused into every in-flight
   // `/advisor model set` lookup, so owner teardown aborts them promptly; the
   // generation wipe (disposeAll, below) makes any completion that still
@@ -819,6 +828,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         // absent key).
         ...(resolved.maxTokens === undefined ? {} : { maxTokens: resolved.maxTokens }),
         ...(resolved.proseFallback === undefined ? {} : { proseFallback: resolved.proseFallback }),
+        // T2 (plan dsh-advisor-reasoning-effort): the eighth key rides the same
+        // resolved source. An absent/empty value means AUTOMATIC (the runtime
+        // sends the smallest declared effort) — conditional spread keeps
+        // absent-never-undefined, so the renderer prints no line for it.
+        ...(resolved.reasoningEffort === undefined ? {} : { reasoningEffort: resolved.reasoningEffort }),
         systemPromptSet: resolved.systemPrompt !== '',
         systemPromptSummary: summarizeSystemPrompt(resolved.systemPrompt),
         // T2 (plan dsh-advisor-tui-settings-n9): the truthful edit-hint input.

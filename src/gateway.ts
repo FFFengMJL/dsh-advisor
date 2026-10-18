@@ -1,6 +1,9 @@
 /**
  * T1 (plan dsh-advisor-settings-gateway-n5) — host-side `advisor` config
- * gateway: the `/api/advisor/get` + `/api/advisor/set` Remote endpoints.
+ * gateway: the `/api/advisor/get` + `/api/advisor/set` Remote endpoints, the
+ * B2 per-session model endpoints, and the T2 read-only
+ * `/api/advisor/modelReasoning` capability query (plan
+ * dsh-advisor-reasoning-effort).
  *
  * Transport: the typertGateway `/api` interceptor is the single host-wide RPC
  * slot (a plugin must NOT `connection.rpc.intercept('/api')` again — it would
@@ -123,6 +126,70 @@ export function advisorSessionError(tag: AdvisorSessionErrorTag, message: string
   return { error: { tag, message } }
 }
 
+// ---------------------------------------------------------------------------
+// Model capability surface (plan dsh-advisor-reasoning-effort T2)
+// ---------------------------------------------------------------------------
+
+/** One adapter-declared reasoning effort on the wire (JSON-safe projection). */
+export interface AdvisorModelReasoningEffortWire {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+}
+
+/**
+ * The `LlmResolvedModelInfo.reasoning` slice the capability endpoint serves.
+ * Structural (no dsh import): the gateway reads exactly these two members, and
+ * the wiring that passes `LlmRuntime.resolveModelInfo` over is typechecked
+ * against this shape at the assignment site.
+ */
+export interface AdvisorModelReasoningInfo {
+  /** Declared efforts, least → greatest — the adapter's order, preserved. */
+  readonly efforts: readonly AdvisorModelReasoningEffortWire[]
+  /**
+   * Adapter-configured default materialized into requests when callers omit
+   * an effort. Absence preserves the provider's own default.
+   */
+  readonly defaultEffort?: string
+}
+
+/**
+ * Minimal model-metadata lookup the gateway drives (satisfied by
+ * `LlmRuntime.resolveModelInfo`). OPTIONAL: a gateway constructed without one
+ * (no app-root llm on this fiber) stays inert — the endpoint answers
+ * `advisor/model-reasoning-unavailable` instead of guessing.
+ */
+export type AdvisorModelInfoResolver = (
+  provider: string,
+  model: string,
+  signal?: AbortSignal,
+) => Promise<{ readonly reasoning?: AdvisorModelReasoningInfo }>
+
+/**
+ * Plugin-domain error tags for the READ-ONLY capability query
+ * (`advisor/modelReasoning`), carried in RETURNED DATA like the session tags —
+ * never new RemoteError codes and never a thrown coded failure:
+ *
+ * - `advisor/model-reasoning-unavailable` — there is nothing to answer with:
+ *   the provider/model pair is malformed, this gateway holds no resolver, or
+ *   the model declares no selectable reasoning effort;
+ * - `advisor/model-reasoning-failed` — the lookup itself failed (adapter
+ *   throw, unknown route).
+ */
+export type AdvisorModelReasoningErrorTag =
+  | 'advisor/model-reasoning-unavailable'
+  | 'advisor/model-reasoning-failed'
+
+/** One `advisor/modelReasoning` result: the declared efforts, or a tagged data error. */
+export type AdvisorModelReasoningResult =
+  | AdvisorModelReasoningInfo
+  | { readonly error: { readonly tag: AdvisorModelReasoningErrorTag; readonly message: string } }
+
+/** Build one tagged capability error (keeps every arm's shape identical). */
+function modelReasoningError(tag: AdvisorModelReasoningErrorTag, message: string): AdvisorModelReasoningResult {
+  return { error: { tag, message } }
+}
+
 /**
  * The elected owner's session face — implemented by the wiring (`index.ts`)
  * against the SAME `AdvisorCommandController` the `/advisor model` commands
@@ -170,6 +237,12 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * inert (no second controller, no surviving-fiber promotion).
    */
   private readonly sessionControl: () => AdvisorSessionGatewayFace | undefined
+  /**
+   * The read-only model capability lookup (T2). Absent → the
+   * `/api/advisor/modelReasoning` endpoint answers
+   * `advisor/model-reasoning-unavailable` in data and stays inert.
+   */
+  private readonly resolveModelInfo: AdvisorModelInfoResolver | undefined
 
   /**
    * @param ctx - owning context (the plugin fiber's ctx inside `apply`).
@@ -178,11 +251,20 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * @param sessionControl - lazy access to the elected owner's session face
    *   (B2); defaults to "absent" so a direct construction without the wiring
    *   keeps the session endpoints cleanly unavailable.
+   * @param resolveModelInfo - the app-root `LlmRuntime.resolveModelInfo`
+   *   lookup the capability endpoint drives (T2); defaults to "absent" for the
+   *   same reason — the endpoint then reports unavailable, never throws.
    */
-  constructor(ctx: Context, bridge: AdvisorSettingsBridge, sessionControl: () => AdvisorSessionGatewayFace | undefined = () => undefined) {
+  constructor(
+    ctx: Context,
+    bridge: AdvisorSettingsBridge,
+    sessionControl: () => AdvisorSessionGatewayFace | undefined = () => undefined,
+    resolveModelInfo?: AdvisorModelInfoResolver,
+  ) {
     super(ctx, 'advisor')
     this.bridge = bridge
     this.sessionControl = sessionControl
+    this.resolveModelInfo = resolveModelInfo
     // The settings service is optional (no settings → entry fallback). The
     // inject child activates only when a settings service is composed, mirroring
     // installAdvisorSettings' conditional child; the returned disposer mirrors
@@ -264,6 +346,61 @@ export class AdvisorConfigGateway extends TypertRemoteService {
   }
 
   /**
+   * T2 (plan dsh-advisor-reasoning-effort) — the READ-ONLY capability query
+   * (`/api/advisor/modelReasoning`, args `{ provider, model }`): the efforts
+   * the resolved model DECLARES, in the adapter's least → greatest order, plus
+   * its configured default. The settings card's effort selector reads THIS
+   * instead of a client-side catalog: a profile-declared model has no catalog
+   * entry, so a second source would drift from what the runtime can send.
+   *
+   * Never throws — every unanswerable arm is a tagged data error, so a
+   * capability query can never fail the settings card. The success value
+   * omits absent optional keys (`description`, `defaultEffort`): the
+   * typertGateway result validation rejects undefined values.
+   */
+  async modelReasoning(provider: string, model: string): Promise<AdvisorModelReasoningResult> {
+    // The SAME pair validation as the command face and the session endpoints
+    // (one source — `parseModelPair`); a malformed pair cannot name a route.
+    const pair = parseModelPair(provider, model)
+    if (!pair.ok) return modelReasoningError('advisor/model-reasoning-unavailable', `advisor: ${pair.reason}`)
+    const resolve = this.resolveModelInfo
+    if (resolve === undefined) {
+      return modelReasoningError(
+        'advisor/model-reasoning-unavailable',
+        'advisor: model capability lookup is unavailable — this gateway holds no resolver for this fiber',
+      )
+    }
+    let info: { readonly reasoning?: AdvisorModelReasoningInfo }
+    try {
+      info = await resolve(pair.provider, pair.model)
+    } catch (error) {
+      return modelReasoningError(
+        'advisor/model-reasoning-failed',
+        `advisor: model capability lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    // No reasoning metadata (or an empty declaration) = nothing selectable:
+    // the same verdict the runtime reaches (RD-2), so the card can never offer
+    // an effort the runtime would silently replace with the smallest one.
+    const efforts = info?.reasoning?.efforts
+    const defaultEffort = info?.reasoning?.defaultEffort
+    if (efforts === undefined || efforts[0] === undefined) {
+      return modelReasoningError(
+        'advisor/model-reasoning-unavailable',
+        `advisor: ${pair.provider}/${pair.model} declares no reasoning efforts`,
+      )
+    }
+    return {
+      efforts: efforts.map(({ id, name, description }) => ({
+        id,
+        name,
+        ...(description === undefined ? {} : { description }),
+      })),
+      ...(defaultEffort === undefined ? {} : { defaultEffort }),
+    }
+  }
+
+  /**
    * Validate a config patch and write it to the advisor ENTRY config (live —
    * the Loader commits the volatile fields and the runtime re-applies through
    * the bridge `onChange`; no restart needed).
@@ -322,8 +459,8 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * RPC on a bad config, and gate semantics hold (no model call can start).
    * S1: when the raw source is still readable, the fallback seeds its scalar
    * latches (systemPrompt / immuneTurns / maxDeltaMessages / maxTokens /
-   * proseFallback) instead of hardcoded defaults, so an invalid config only
-   * drops the offending keys.
+   * proseFallback / reasoningEffort) instead of hardcoded defaults, so an
+   * invalid config only drops the offending keys.
    */
   private readConfig(): ResolvedAdvisorConfig {
     let config: ResolvedAdvisorConfig
@@ -343,15 +480,20 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         maxDeltaMessages: raw?.maxDeltaMessages ?? 60,
         maxTokens: raw?.maxTokens,
         proseFallback: raw?.proseFallback,
+        // The resolver never ran on this arm, so the RD-1 empty = automatic
+        // normalization (config.ts) is mirrored here: a raw empty/blank value
+        // must not surface as a present-as-empty key.
+        reasoningEffort: raw?.reasoningEffort?.trim() || undefined,
         disabledReason: error instanceof Error ? error.message : String(error),
       }
     }
     // typertGateway wire boundary: absent keys are omitted, never
     // present-as-undefined (the result validator rejects undefined values).
-    // The seven persisted keys (qc1 W-1, issue #102): maxTokens/proseFallback
+    // The eight persisted keys (qc1 W-1, issue #102; T2 plan
+    // dsh-advisor-reasoning-effort): maxTokens/proseFallback/reasoningEffort
     // ride the same resolved source — present whenever the resolver defined
     // them (the schema defaults fill 768/false on the normal path), omitted
-    // only when the S1 fallback's raw entry lacked them.
+    // only when the raw entry lacks them and the S1 fallback cannot seed them.
     const wire: Record<string, unknown> = {
       enabled: config.enabled,
       systemPrompt: config.systemPrompt,
@@ -360,6 +502,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     }
     if (config.maxTokens !== undefined) wire.maxTokens = config.maxTokens
     if (config.proseFallback !== undefined) wire.proseFallback = config.proseFallback
+    if (config.reasoningEffort !== undefined) wire.reasoningEffort = config.reasoningEffort
     if (config.provider !== undefined) wire.provider = config.provider
     if (config.model !== undefined) wire.model = config.model
     if (config.disabledReason !== undefined) wire.disabledReason = config.disabledReason
@@ -430,6 +573,23 @@ export function advisorTypertContribution(): TypertContribution {
         parameters: [
           { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
           { name: 'selection', wire: 'selection', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      // T2 (plan dsh-advisor-reasoning-effort) — the read-only model
+      // capability query. Same explicit registration, same direct/src-json
+      // dispatch shape; the payload contract stays one plain-object `args`
+      // keyed by parameter name (`modelReasoning` → `{ args: { provider,
+      // model } }`). Async (the adapter lookup is awaited), still tag-in-data.
+      {
+        id: 'dsh-advisor#advisor/modelReasoning',
+        service: 'advisor',
+        namespace: 'advisor',
+        method: 'modelReasoning',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'provider', wire: 'provider', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'model', wire: 'model', source: 'json', codec: { mode: 'src-json' } },
         ],
         result: { mode: 'src-json' },
       },

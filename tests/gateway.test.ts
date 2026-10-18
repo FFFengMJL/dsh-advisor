@@ -48,6 +48,7 @@ import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { installAdvisorSettings } from '../src/settings'
 import { AdvisorConfigGateway, advisorTypertContribution } from '../src/gateway'
+import type { AdvisorModelInfoResolver, AdvisorModelReasoningResult } from '../src/gateway'
 import { resolveAdvisorConfig } from '../src/config'
 import type { AdvisorConfig, ResolvedAdvisorConfig } from '../src/config'
 import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
@@ -470,7 +471,10 @@ class FakeConnectionService extends Service {
 }
 
 describe('typertGateway endpoint claims + payload contract', () => {
-  async function composeGatewayHarness(seedEntry?: Record<string, unknown>): Promise<{ ctx: Context; connection: FakeConnectionService; entry: MemoryEntryConfig }> {
+  async function composeGatewayHarness(
+    seedEntry?: Record<string, unknown>,
+    resolveModelInfo?: AdvisorModelInfoResolver,
+  ): Promise<{ ctx: Context; connection: FakeConnectionService; entry: MemoryEntryConfig }> {
     const ctx = new Context()
     await ctx.plugin(TypertRegistry)
     await ctx.plugin(FakeConnectionService)
@@ -485,7 +489,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
       ...(seedEntry as Partial<AdvisorConfig> | undefined),
     }))
     const bridge = installAdvisorSettings(ctx, entry.config)
-    new AdvisorConfigGateway(ctx, bridge)
+    new AdvisorConfigGateway(ctx, bridge, () => undefined, resolveModelInfo)
     await provideSettingsDouble(ctx, entry)
     ctx.typert.register(advisorTypertContribution())
     const connection = ctx.get('connection') as unknown as FakeConnectionService
@@ -501,8 +505,10 @@ describe('typertGateway endpoint claims + payload contract', () => {
     expect(ctx.reflect.props['advisor']).toEqual({ type: 'service' })
     expect(ctx.typert.local.get('advisor/get')).toMatchObject({ service: 'advisor', namespace: 'advisor', method: 'get' })
     expect(ctx.typert.local.get('advisor/set')).toMatchObject({ service: 'advisor', namespace: 'advisor', method: 'set' })
+    expect(ctx.typert.local.get('advisor/modelReasoning')).toMatchObject({ service: 'advisor', namespace: 'advisor', method: 'modelReasoning' })
     expect(connection.matches!('advisor/get')).toBe(true)
     expect(connection.matches!('advisor/set')).toBe(true)
+    expect(connection.matches!('advisor/modelReasoning')).toBe(true)
     // Unrelated endpoints are NOT claimed (the interceptor falls through).
     expect(connection.matches!('advisor/other')).toBe(false)
     expect(connection.matches!('goals/create')).toBe(false)
@@ -664,6 +670,104 @@ describe('typertGateway endpoint claims + payload contract', () => {
       expect('proseFallback' in config).toBe(false)
     }
   })
+
+  // -------------------------------------------------------------------------
+  // Model capability endpoint (plan dsh-advisor-reasoning-effort T2)
+  // -------------------------------------------------------------------------
+
+  it('serves the declared reasoning efforts in adapter order through /api/advisor/modelReasoning (T2)', async () => {
+    // The adapter's declared efforts (least → greatest) and its configured
+    // default pass through untouched; an absent `description` is OMITTED, not
+    // present-as-undefined (the typertGateway result validation rejects
+    // undefined values).
+    const resolveModelInfo = vi.fn(async () => ({
+      reasoning: {
+        efforts: [
+          { id: 'low', name: 'Low' },
+          { id: 'medium', name: 'Medium', description: 'Balanced' },
+          { id: 'high', name: 'High' },
+        ],
+        defaultEffort: 'medium',
+      },
+    }))
+    const { connection } = await composeGatewayHarness(undefined, resolveModelInfo)
+    const result = await connection.handler!(
+      'advisor/modelReasoning',
+      { args: { provider: 'deepseek', model: 'deepseek-chat' } },
+      new AbortController().signal,
+      connection.peer,
+    )
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        efforts: [
+          { id: 'low', name: 'Low' },
+          { id: 'medium', name: 'Medium', description: 'Balanced' },
+          { id: 'high', name: 'High' },
+        ],
+        defaultEffort: 'medium',
+      },
+    })
+    expect(resolveModelInfo).toHaveBeenCalledWith('deepseek', 'deepseek-chat')
+  })
+
+  it('answers a tagged data error through the wire when no resolver is injected (never a wire failure, T2)', async () => {
+    // A gateway without the capability resolver stays inert in DATA (ok:true +
+    // plugin-domain tag) — the same shape the session endpoints use, so the
+    // card can render "unavailable" instead of an RPC failure.
+    const { connection } = await composeGatewayHarness()
+    const result = await connection.handler!(
+      'advisor/modelReasoning',
+      { args: { provider: 'deepseek', model: 'deepseek-chat' } },
+      new AbortController().signal,
+      connection.peer,
+    )
+    expect(result).toEqual({
+      ok: true,
+      value: { error: { tag: 'advisor/model-reasoning-unavailable', message: expect.any(String) } },
+    })
+  })
+
+  it('carries reasoningEffort on set and through a get round-trip (eighth key, T2)', async () => {
+    const { connection } = await composeGatewayHarness()
+    const signal = new AbortController().signal
+
+    const setResult = await connection.handler!(
+      'advisor/set',
+      { args: { patch: { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' } } },
+      signal,
+      connection.peer,
+    )
+    expect(setResult.ok).toBe(true)
+    if (setResult.ok) {
+      expect(setResult.value).toMatchObject({ config: { reasoningEffort: 'high' } })
+    }
+
+    const got = await connection.handler!('advisor/get', { args: {} }, signal, connection.peer)
+    expect(got.ok).toBe(true)
+    if (got.ok) expect(got.value).toMatchObject({ config: { reasoningEffort: 'high' } })
+  })
+
+  it("reads an emptied reasoningEffort back as absent ('' = automatic, T2)", async () => {
+    const { connection } = await composeGatewayHarness({ reasoningEffort: 'high' })
+    const signal = new AbortController().signal
+
+    // The eighth key is persisted as the raw text the operator wrote; an empty
+    // value means AUTOMATIC (config.ts RD-1), so the wire omits it rather than
+    // carrying a present-as-empty key the renderer would print as a blank value.
+    const cleared = await connection.handler!(
+      'advisor/set',
+      { args: { patch: { reasoningEffort: '' } } },
+      signal,
+      connection.peer,
+    )
+    expect(cleared.ok).toBe(true)
+    if (cleared.ok) expect(cleared.value).not.toMatchObject({ config: { reasoningEffort: expect.anything() } })
+
+    const got = await connection.handler!('advisor/get', { args: {} }, signal, connection.peer)
+    expect(got.ok).toBe(true)
+    if (got.ok) expect(got.value).not.toMatchObject({ config: { reasoningEffort: expect.anything() } })
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -728,6 +832,35 @@ describe('composed plugin (apply wires the gateway)', () => {
     })
   })
 
+  it('serves advisor/modelReasoning through the injected app-root resolver (T2 apply wiring)', async () => {
+    const ctx = new Context()
+    await ctx.plugin(TypertRegistry)
+    await ctx.plugin(TypertGatewayService)
+    provideRemoteAccess(ctx)
+    ctx.provide('sessions', {} as never)
+    ctx.provide('agents', { get: () => undefined } as never)
+    // The app-root llm carries the capability API `apply` injects as the
+    // gateway's resolver (a partial llm double would leave the endpoint inert).
+    ctx.provide('llm', {
+      stream: async () => {},
+      resolveModelInfo: async () => ({
+        reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' },
+      }),
+    } as never)
+    const entry = new MemoryEntryConfig(entryConfig({ systemPrompt: 'entry prompt' }))
+    await provideSettingsDouble(ctx, entry)
+    await ctx.plugin(harnessAdvisorPlugin(), entry.config)
+    await vi.waitFor(() => expect(ctx.reflect.props['advisor']).toEqual({ type: 'service' }))
+
+    const result = await ctx.typertGateway.invoke({
+      namespace: 'advisor', method: 'modelReasoning', args: { provider: 'deepseek', model: 'deepseek-chat' }, peer: ownerPeer(ctx),
+    })
+    expect(result).toEqual({
+      efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }],
+      defaultEffort: 'low',
+    })
+  })
+
   it('a second plugin instance is deduped: one advisor service, no loud error, dispatch stays unambiguous (multi-fiber)', async () => {
     const ctx = new Context()
     await ctx.plugin(TypertRegistry)
@@ -762,5 +895,85 @@ describe('composed plugin (apply wires the gateway)', () => {
     // surface as typertGateway ambiguous-endpoint).
     const result = await ctx.typertGateway.invoke({ namespace: 'advisor', method: 'get', args: {}, peer: ownerPeer(ctx) })
     expect(result).toMatchObject({ config: { enabled: false } })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ⑧ capability endpoint arms (plan dsh-advisor-reasoning-effort T2)
+// ---------------------------------------------------------------------------
+
+describe('AdvisorConfigGateway.modelReasoning (capability endpoint arms)', () => {
+  /** A gateway over a complete pair, with the capability resolver under test. */
+  function gatewayWith(resolveModelInfo?: AdvisorModelInfoResolver): AdvisorConfigGateway {
+    const ctx = new Context()
+    const entry = entryConfig({ provider: 'deepseek', model: 'deepseek-chat' })
+    return new AdvisorConfigGateway(ctx, installAdvisorSettings(ctx, entry), () => undefined, resolveModelInfo)
+  }
+
+  const pair: [string, string] = ['deepseek', 'deepseek-chat']
+
+  it('returns the declared efforts in the adapter order, omitting an absent description/defaultEffort', async () => {
+    // RD-2: least → greatest is the adapter's order, and that is the order the
+    // selector must show; the runtime picks `efforts[0]` for the automatic arm,
+    // so a reordered list would change what "automatic" sends.
+    const gateway = gatewayWith(async () => ({
+      reasoning: {
+        efforts: [
+          { id: 'off', name: 'Off' },
+          { id: 'medium', name: 'Medium', description: 'Balanced' },
+          { id: 'high', name: 'High' },
+        ],
+      },
+    }))
+    expect(await gateway.modelReasoning(...pair)).toEqual({
+      efforts: [
+        { id: 'off', name: 'Off' },
+        { id: 'medium', name: 'Medium', description: 'Balanced' },
+        { id: 'high', name: 'High' },
+      ],
+    })
+  })
+
+  it('answers unavailable when the model declares no reasoning metadata', async () => {
+    const gateway = gatewayWith(async () => ({}))
+    expect(await gateway.modelReasoning(...pair)).toEqual({
+      error: { tag: 'advisor/model-reasoning-unavailable', message: expect.stringContaining('declares no reasoning') },
+    })
+  })
+
+  it('answers unavailable on an empty efforts declaration (same verdict the runtime reaches)', async () => {
+    // `reasoning: { efforts: [] }` offers nothing selectable — the runtime
+    // omits the option (RD-2), so the endpoint must not report a ready list.
+    const gateway = gatewayWith(async () => ({ reasoning: { efforts: [] } }))
+    expect(await gateway.modelReasoning(...pair)).toEqual({
+      error: { tag: 'advisor/model-reasoning-unavailable', message: expect.stringContaining('declares no reasoning') },
+    })
+  })
+
+  it('answers failed (never throws) when the lookup rejects', async () => {
+    const gateway = gatewayWith(async () => {
+      throw new Error('unknown route')
+    })
+    await expect(gateway.modelReasoning(...pair)).resolves.toEqual({
+      error: { tag: 'advisor/model-reasoning-failed', message: expect.stringContaining('unknown route') },
+    })
+  })
+
+  it('answers unavailable when the gateway holds no injected resolver', async () => {
+    const gateway = gatewayWith()
+    expect(await gateway.modelReasoning(...pair)).toEqual({
+      error: { tag: 'advisor/model-reasoning-unavailable', message: expect.stringContaining('unavailable') },
+    })
+  })
+
+  it('rejects an empty, blank or whitespace-bearing pair without invoking the resolver', async () => {
+    const resolveModelInfo = vi.fn(async () => ({ reasoning: { efforts: [{ id: 'low', name: 'Low' }] } }))
+    const gateway = gatewayWith(resolveModelInfo)
+    for (const [provider, model] of [['', 'deepseek-chat'], ['deepseek', '   '], ['deep seek', 'm']] as const) {
+      expect(await gateway.modelReasoning(provider, model)).toEqual({
+        error: { tag: 'advisor/model-reasoning-unavailable', message: expect.any(String) },
+      })
+    }
+    expect(resolveModelInfo).not.toHaveBeenCalled()
   })
 })
