@@ -457,8 +457,10 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     // The declaration is adapter data: entries without a usable id are
     // dropped and a missing/empty name falls back to the id, so the selector
     // can never render a nameless or unselectable option; a declaration that
-    // filters empty takes the same branch as an absent one.
-    const declared = (info?.reasoning?.efforts ?? []).filter(
+    // filters empty — or is not a list at all — takes the same branch as an
+    // absent one (this arm must never throw).
+    const effortList = info?.reasoning?.efforts
+    const declared = (Array.isArray(effortList) ? effortList : []).filter(
       (entry) => typeof entry?.id === 'string' && entry.id.length > 0,
     )
     if (declared[0] === undefined) {

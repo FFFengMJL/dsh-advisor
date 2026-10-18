@@ -998,6 +998,15 @@ describe('AdvisorConfigGateway.modelReasoning (capability endpoint arms)', () =>
     expect(await gateway.modelReasoning(...pair)).toEqual({
       error: { tag: 'advisor/model-reasoning-unavailable', message: expect.stringContaining('declares no reasoning') },
     })
+
+    // A declaration that is not a list at all is the same verdict — this arm
+    // must never throw out of the endpoint.
+    const notAList = gatewayWith(async () => ({
+      reasoning: { efforts: 5 as unknown as readonly AdvisorModelReasoningEffortWire[] },
+    }))
+    expect(await notAList.modelReasoning(...pair)).toEqual({
+      error: { tag: 'advisor/model-reasoning-unavailable', message: expect.stringContaining('declares no reasoning') },
+    })
   })
 
   it('bounds a hung capability lookup with the 60 s deadline (W-1: tagged failure, never a throw)', async () => {
