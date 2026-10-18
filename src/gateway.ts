@@ -46,6 +46,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type SettingsForms from '@deepseek-ai/dsh-settings'
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { deadline } from '@deepseek-ai/dsh-timeout'
 import { ADVISOR_SETTINGS_NAMESPACE } from './settings.js'
 import type { AdvisorSettingsBridge } from './settings.js'
 import { parseModelPair } from './commands.js'
@@ -188,6 +189,43 @@ export type AdvisorModelReasoningResult =
 /** Build one tagged capability error (keeps every arm's shape identical). */
 function modelReasoningError(tag: AdvisorModelReasoningErrorTag, message: string): AdvisorModelReasoningResult {
   return { error: { tag, message } }
+}
+
+/**
+ * Whole-lookup deadline for one capability query (W-1): the SAME 60 s norm the
+ * command face applies to its model validation (`src/commands.ts`
+ * `ADVISOR_MODEL_VALIDATION_TIMEOUT_MS`) and the runtime applies to one
+ * `llm.stream` call (`src/advisor-runtime.ts` `callTimeoutMs`).
+ */
+const ADVISOR_MODEL_REASONING_TIMEOUT_MS = 60_000
+
+/** Capability-owned code stamped onto the deadline's TimeoutReason. */
+const ADVISOR_MODEL_REASONING_TIMEOUT = 'ADVISOR_MODEL_REASONING_TIMEOUT'
+
+/**
+ * Race one lookup against the deadline signal (the same shape as the command
+ * face's `raceSignal`, `src/index.ts`): settle with the lookup's value, or
+ * `'aborted'` when the signal aborts first. `deadline()` only NOTIFIES through
+ * its signal, so a resolver whose lookup ignores cancellation would otherwise
+ * hang the query past the bound — the race makes the 60 s limit real for the
+ * caller regardless of resolver behavior.
+ */
+function raceSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | 'aborted'> {
+  if (signal.aborted) return Promise.resolve('aborted')
+  return new Promise<T | 'aborted'>((resolve, reject) => {
+    const onAbort = (): void => resolve('aborted')
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
 }
 
 /**
@@ -356,7 +394,10 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * Never throws — every unanswerable arm is a tagged data error, so a
    * capability query can never fail the settings card. The success value
    * omits absent optional keys (`description`, `defaultEffort`): the
-   * typertGateway result validation rejects undefined values.
+   * typertGateway result validation rejects undefined values. The lookup is
+   * bounded by a 60 s deadline (W-1): a hung resolver settles as
+   * `advisor/model-reasoning-failed` naming the timeout, never an unbounded
+   * wait.
    */
   async modelReasoning(provider: string, model: string): Promise<AdvisorModelReasoningResult> {
     // The SAME pair validation as the command face and the session endpoints
@@ -370,13 +411,26 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         'advisor: model capability lookup is unavailable — this gateway holds no resolver for this fiber',
       )
     }
-    let info: { readonly reasoning?: AdvisorModelReasoningInfo }
+    // W-1: bound the lookup by the capability-lookup norm (60 s) and thread
+    // the deadline signal into the resolver. The lookup is ALSO raced against
+    // the signal, so a hung adapter that ignores cancellation settles here at
+    // the deadline instead of leaving the card's effort select auto-only until
+    // a reload. No upstream signal: the deadline is the only abort source.
+    using deadlineHandle = deadline(undefined, ADVISOR_MODEL_REASONING_TIMEOUT_MS, ADVISOR_MODEL_REASONING_TIMEOUT)
+    const signal = deadlineHandle.signal
+    let info: { readonly reasoning?: AdvisorModelReasoningInfo } | 'aborted'
     try {
-      info = await resolve(pair.provider, pair.model)
+      info = await raceSignal(resolve(pair.provider, pair.model, signal), signal)
     } catch (error) {
       return modelReasoningError(
         'advisor/model-reasoning-failed',
         `advisor: model capability lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    if (info === 'aborted') {
+      return modelReasoningError(
+        'advisor/model-reasoning-failed',
+        `advisor: model capability lookup timed out after ${ADVISOR_MODEL_REASONING_TIMEOUT_MS}ms`,
       )
     }
     // No reasoning metadata (or an empty declaration) = nothing selectable:

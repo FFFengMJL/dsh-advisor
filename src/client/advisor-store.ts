@@ -376,8 +376,13 @@ export class AdvisorSettingsStore {
   /** In-flight model resolutions (one per provider). */
   private inflightModels = new Set<string>()
 
-  /** In-flight capability resolutions (one per `${provider}\u0000${model}` key). */
-  private inflightReasoning = new Set<string>()
+  /**
+   * In-flight capability resolutions, one promise per
+   * `${provider}\u0000${model}` key. The promise IS the dedupe identity: a
+   * stale settle can only clear the entry it registered, never a successor's
+   * (qc3 S-1).
+   */
+  private inflightReasoning = new Map<string, Promise<void>>()
 
   /**
    * Bumped by every successful load(): a capability fetch started before the
@@ -676,11 +681,28 @@ export class AdvisorSettingsStore {
     if (this.inflightReasoning.has(key)) return
     const state = this.store.getSnapshot()
     if (Object.hasOwn(state.modelReasoning, key) || Object.hasOwn(state.modelReasoningState, key)) return
-    this.inflightReasoning.add(key)
-    const generation = this.reasoningGeneration
     this.store.update((s) => {
       s.modelReasoningState = { ...s.modelReasoningState, [key]: 'loading' }
     })
+    const tracked = this.fetchModelReasoning(key, provider, model)
+    this.inflightReasoning.set(key, tracked)
+    try {
+      await tracked
+    } finally {
+      // Identity guard (qc3 S-1): load() clears the map mid-flight and a
+      // successor may claim the same key before this fetch settles — a stale
+      // settle must leave that successor's marker alone. Only a fetch that is
+      // still the current owner clears its own entry.
+      if (this.inflightReasoning.get(key) === tracked) this.inflightReasoning.delete(key)
+    }
+  }
+
+  /**
+   * One capability fetch for `key` — the promise the in-flight dedupe tracks.
+   * Never rejects: every failure arm latches 'unavailable'.
+   */
+  private async fetchModelReasoning(key: string, provider: string, model: string): Promise<void> {
+    const generation = this.reasoningGeneration
     try {
       const result = await this.rpc.call('/api', 'advisor/modelReasoning', { args: { provider, model } })
       if (generation !== this.reasoningGeneration) return
@@ -703,8 +725,6 @@ export class AdvisorSettingsStore {
           s.modelReasoningState = { ...s.modelReasoningState, [key]: 'unavailable' }
         })
       }
-    } finally {
-      this.inflightReasoning.delete(key)
     }
   }
 

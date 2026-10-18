@@ -708,7 +708,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
         defaultEffort: 'medium',
       },
     })
-    expect(resolveModelInfo).toHaveBeenCalledWith('deepseek', 'deepseek-chat')
+    expect(resolveModelInfo).toHaveBeenCalledWith('deepseek', 'deepseek-chat', expect.any(AbortSignal))
   })
 
   it('answers a tagged data error through the wire when no resolver is injected (never a wire failure, T2)', async () => {
@@ -957,6 +957,37 @@ describe('AdvisorConfigGateway.modelReasoning (capability endpoint arms)', () =>
     await expect(gateway.modelReasoning(...pair)).resolves.toEqual({
       error: { tag: 'advisor/model-reasoning-failed', message: expect.stringContaining('unknown route') },
     })
+  })
+
+  it('bounds a hung capability lookup with the 60 s deadline (W-1: tagged failure, never a throw)', async () => {
+    // The resolver ignores its signal and never settles: signal threading
+    // alone would hang the query forever (the card's effort select stays
+    // auto-only until a reload), so the race against the deadline signal is
+    // what makes the bound real.
+    const hang: AdvisorModelInfoResolver = () => new Promise(() => {})
+    const resolveModelInfo = vi.fn(hang)
+    const gateway = gatewayWith(resolveModelInfo)
+    vi.useFakeTimers()
+    try {
+      const pending = gateway.modelReasoning(...pair)
+      await vi.advanceTimersByTimeAsync(59_000)
+      let settled = false
+      void pending.then(() => { settled = true })
+      await Promise.resolve()
+      expect(settled).toBe(false) // before the deadline: still resolving
+      await vi.advanceTimersByTimeAsync(1_000)
+      await expect(pending).resolves.toEqual({
+        error: {
+          tag: 'advisor/model-reasoning-failed',
+          message: expect.stringContaining('timed out after 60000ms'),
+        },
+      })
+      // One lookup, no retry — with the deadline signal threaded into it.
+      expect(resolveModelInfo).toHaveBeenCalledTimes(1)
+      expect(resolveModelInfo).toHaveBeenCalledWith('deepseek', 'deepseek-chat', expect.any(AbortSignal))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('answers unavailable when the gateway holds no injected resolver', async () => {

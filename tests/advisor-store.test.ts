@@ -1406,6 +1406,36 @@ describe('thinking-effort capability (plan dsh-advisor-reasoning-effort, task 3)
     await reloading
   })
 
+  it('a stale settle leaves a successor in-flight marker alone (qc3 S-1)', async () => {
+    // Timeline: fetch A is still in flight when load() clears the in-flight
+    // map and registers fetch B for the SAME key; A then settles stale and
+    // must not clear B's marker. The marker is the invariant under test —
+    // B's 'loading' state already forces a later call to return early, so the
+    // private dedupe map is read directly (no public readback exists).
+    const pending: Array<(value: RpcResult<unknown>) => void> = []
+    const { remote, rpc, modelReasoning } = scriptedApi({
+      config: { ...PAIRED },
+      reasoningHandler: () => new Promise<RpcResult<unknown>>((resolve) => { pending.push(resolve) }),
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load() // fetch A — never settles until released below
+    const inflight = (store as unknown as { inflightReasoning: Map<string, Promise<void>> }).inflightReasoning
+    const fetchA = inflight.get(KEY)
+    await store.load() // clears the map, then registers fetch B for the same key
+    const fetchB = inflight.get(KEY)
+    expect(pending).toHaveLength(2)
+    expect(fetchB).not.toBe(fetchA)
+
+    pending[0]!(okResult({ efforts: [{ id: 'stale', name: 'Stale' }] })) // A settles stale
+    await fetchA
+    expect(inflight.get(KEY)).toBe(fetchB) // B's marker survives A's stale settle
+
+    pending[1]!(okResult({ efforts: [{ id: 'fresh', name: 'Fresh' }] }))
+    await fetchB
+    expect(modelReasoning).toHaveBeenCalledTimes(2) // no duplicate read-only RPC
+    expect(store.store.getSnapshot().modelReasoning[KEY]).toEqual([{ id: 'fresh', name: 'Fresh' }])
+  })
+
   it('seeds the draft reasoningEffort from the resolved config; an absent key reads as automatic', async () => {
     const seeded = scriptedApi({ config: { ...PAIRED, reasoningEffort: 'low' } })
     const store = new AdvisorSettingsStore(seeded.remote, seeded.rpc, schema)
