@@ -463,6 +463,36 @@ describe('AdvisorRuntime — reasoning effort selection (plan dsh-advisor-reason
     expect('reasoningEffort' in llm.calls[0]!).toBe(false)
   })
 
+  it('reports the dropped configured effort ONCE when the model declares no efforts at all (no silent fallback)', async () => {
+    // should-fix (PR #111): with an empty declared list the early return used
+    // to skip the warn block, so an operator-pinned effort vanished without a
+    // trace. The distinct message names the no-efforts cause (there is no
+    // fallback effort to name) and rides the same once-per-runtime latch.
+    const warn = vi.fn()
+    const llm = new FakeLlm(
+      [{ chunks: textReply('{"note":"first"}') }, { chunks: textReply('{"note":"second"}') }],
+      'none',
+    )
+    const { runtime, notes } = makeRuntime(llm, { reasoningEffort: 'high', logger: { debug: vi.fn(), warn } })
+
+    runtime.enqueue(delta('update one'))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta('update two'))
+    await runtime.waitForDrain()
+
+    expect(notes).toEqual([
+      { note: 'first', severity: 'nit' },
+      { note: 'second', severity: 'nit' },
+    ])
+    // The option stays omitted on both calls — the model declares nothing.
+    expect(llm.calls.map((options) => 'reasoningEffort' in options)).toEqual([false, false])
+    const warnings = warn.mock.calls.filter(
+      ([message]) => typeof message === 'string' && message.startsWith('advisor: configured reasoningEffort'),
+    )
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]![0]).toContain('declares no reasoning efforts')
+  })
+
   it('does not cache a resolution failure: the configured effort applies once the model resolves', async () => {
     const llm = new FakeLlm(
       [{ chunks: textReply('{"note":"first"}') }, { chunks: textReply('{"note":"second"}') }],

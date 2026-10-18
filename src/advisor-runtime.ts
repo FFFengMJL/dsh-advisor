@@ -931,7 +931,9 @@ export class AdvisorRuntime {
    *
    * A configured id the model does not declare (a leftover after switching
    * models) falls back to the smallest declared effort and is reported ONCE
-   * per runtime (`reasoningEffortWarned`).
+   * per runtime (`reasoningEffortWarned`); a model that declares no reasoning
+   * metadata at all omits the option and reports the unsent configured value
+   * with a distinct message, under the same once-per-runtime latch.
    */
   private async resolveReasoningEffort(signal?: AbortSignal): Promise<ReasoningEffortId | undefined> {
     const key = `${this.provider}\u0000${this.model}`
@@ -956,7 +958,20 @@ export class AdvisorRuntime {
       this.reasoningEffortCache.set(key, efforts)
     }
     const smallest = efforts[0]
-    if (smallest === undefined) return undefined
+    if (smallest === undefined) {
+      // A configured value that cannot be sent because the model declares no
+      // reasoning metadata at all is the same invisible drift the undeclared-id
+      // warn below closes — reported ONCE per runtime with a DISTINCT message
+      // (there is no fallback effort to name).
+      if (this.reasoningEffort !== undefined && !this.reasoningEffortWarned) {
+        this.reasoningEffortWarned = true
+        this.logger.warn(
+          'advisor: configured reasoningEffort is not sent — the model declares no reasoning efforts',
+          { provider: this.provider, model: this.model, configured: this.reasoningEffort },
+        )
+      }
+      return undefined
+    }
     const configured = this.reasoningEffort
     if (configured === undefined) return smallest.id
     const declared = efforts.find((entry) => entry.id === ReasoningEffortId(configured))
