@@ -77,6 +77,7 @@ const TUI_FIELD_KEYS: readonly (keyof AdvisorConfig)[] = [
   'maxDeltaMessages',
   'maxTokens',
   'proseFallback',
+  'reasoningEffort',
 ]
 
 /** Stub `tuiSettingsSections` registry mirroring the dsh-TUI host contract
@@ -205,11 +206,11 @@ describe('section fields — §5.1 keys, display order, zh/en copy (AC-1)', () =
     return sections.sections[0]!
   }
 
-  it('declares the six fields with the expected kinds in display order', () => {
+  it('declares the seven fields with the expected kinds in display order', () => {
     const fields = registeredSection().fields
 
     expect(fields.map((field) => field.path)).toEqual(TUI_FIELD_KEYS.map((key) => [key]))
-    expect(fields.map((field) => field.kind)).toEqual(['text', 'text', 'number', 'number', 'number', 'boolean'])
+    expect(fields.map((field) => field.kind)).toEqual(['text', 'text', 'number', 'number', 'number', 'boolean', 'text'])
   })
 
   it('every field carries a non-empty path, label, and zh/en hint + hintDescriptions; systemPrompt is absent', () => {
@@ -259,6 +260,24 @@ describe('section fields — §5.1 keys, display order, zh/en copy (AC-1)', () =
     expect(proseFallback?.hint).toMatch(/prose/i)
     expect(proseFallback?.descriptions?.zh).toBeTruthy()
     expect(proseFallback?.hintDescriptions?.zh).toBeTruthy()
+  })
+
+  it('declares the thinking-effort field as free text with the automatic-default hint (AC-7)', () => {
+    const fields = registeredSection().fields
+    const reasoningEffort = fields.find((field) => field.path[0] === 'reasoningEffort')
+    // A static section cannot list per-model effort options (RD-5), so the
+    // field is a text id: an empty draft means automatic, and the hint names
+    // the source of the legal values (the model's declared efforts).
+    expect(reasoningEffort?.kind).toBe('text')
+    expect(reasoningEffort?.label).toBe('Thinking effort')
+    // Same zh label as the web card's thinking-effort control.
+    expect(reasoningEffort?.descriptions?.zh).toBe('思考权重')
+    expect(reasoningEffort?.hint).toMatch(/automatic/i)
+    expect(reasoningEffort?.hint).toMatch(/smallest/i)
+    expect(reasoningEffort?.hint).toMatch(/declares/)
+    // The zh hint carries the semantics, not just a translated label.
+    expect(reasoningEffort?.hintDescriptions?.zh).toMatch(/自动/)
+    expect(reasoningEffort?.hintDescriptions?.zh).toMatch(/最小/)
   })
 })
 
