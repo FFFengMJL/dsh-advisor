@@ -224,6 +224,58 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
     })
   })
 
+  it('tolerates and drops BOTH legacy keys at once (dual-legacy stored profile loads cleanly)', () => {
+    // The worst realistic migration surface: a stored profile still carrying
+    // `enabled:` AND `maxTokens:` alongside every live key. Both dead values
+    // are ignored (resolution keys purely on the pair) and neither key ever
+    // reaches the snapshot.
+    const withPair = resolveAdvisorConfig({
+      enabled: false,
+      maxTokens: 5128,
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      systemPrompt: 'custom reviewer prompt',
+      immuneTurns: 5,
+      maxDeltaMessages: 10,
+      proseFallback: true,
+      reasoningEffort: 'high',
+    })
+    expect(withPair.enabled).toBe(true)
+    expect(withPair.provider).toBe('deepseek')
+    expect(withPair.model).toBe('deepseek-chat')
+    // `enabled` here is the DERIVED pair-gate verdict, not the legacy value.
+    expect('maxTokens' in withPair).toBe(false)
+    expect(unwrapAdvisorConfig(Config({
+      enabled: false,
+      maxTokens: 5128,
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      systemPrompt: 'custom reviewer prompt',
+      immuneTurns: 5,
+      maxDeltaMessages: 10,
+      proseFallback: true,
+      reasoningEffort: 'high',
+    }))).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      systemPrompt: 'custom reviewer prompt',
+      immuneTurns: 5,
+      maxDeltaMessages: 10,
+      proseFallback: true,
+      reasoningEffort: 'high',
+    })
+  })
+
+  it('keeps legacy-key matching exact — case/typo near-misses stay hard rejects', () => {
+    // LEGACY_KEYS matching is exact: only `enabled` and `maxTokens` are
+    // tolerated. A casing or underscore variant is an unknown key (spec §5.2
+    // strict schema unchanged).
+    expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', maxtoken: 5128 }))
+      .toThrow(/unknown config key "maxtoken"/)
+    expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', max_token: 5128 }))
+      .toThrow(/unknown config key "max_token"/)
+  })
+
   it('rejects non-object config input', () => {
     expect(() => resolveAdvisorConfig('nope')).toThrow()
     expect(() => resolveAdvisorConfig(null)).toThrow()
