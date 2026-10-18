@@ -20,3 +20,7 @@ Adding a key to a dsh plugin's config schema is a **write-path one-liner but a r
 ## Failure signature
 
 "A config key exists and saves fine, but one surface never shows it" → audit seams 2–6 before blaming the client. **A get/set round-trip test with a NON-default value is the single cheapest detector** — it fails on every omitted read seam at once.
+
+## Removal is the same checklist, mirrored (2026-10-18, `maxTokens` removal)
+
+Removing a key touches the same seams in reverse, plus one removal-only seam: **stored-profile tolerance**. A stored profile still carrying the removed key must load cleanly, not reject the plugin row — add the key to the resolver's `LEGACY_KEYS` (tolerated, destructured out of every snapshot before the rest-spread, never read, never re-persisted; same mechanism as the 2026-09-26 `enabled` removal). Pin it with (a) a dual-legacy fixture (both removed keys + all live keys resolve and strip) and (b) near-miss strictness tests (`maxtoken`, `max_token` still throw unknown-key) so the tolerance cannot widen into case-insensitive matching. The gateway `set` echo test must also prove a legacy key in a patch never reaches the wire.
