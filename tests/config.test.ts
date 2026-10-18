@@ -5,7 +5,9 @@
  * - The exported schemastery `Config` schema (the cordis Loader path) applies
  *   defaults (`immuneTurns` 3, `maxDeltaMessages` 60, `systemPrompt` "",
  *   `maxTokens` 768, `proseFallback` false) and enforces types/bounds
- *   (int ≥ 0; maxTokens 128..16384). All seven live fields are `.volatile()`:
+ *   (int ≥ 0; maxTokens 128..16384). `reasoningEffort` deliberately has NO
+ *   default (an absent value means automatic — the smallest effort the
+ *   resolved model declares). All eight live fields are `.volatile()`:
  *   `Config(raw)` resolves them to `{ get() }` references (the loader's
  *   no-remount edit channel), and the reads below go through
  *   `unwrapAdvisorConfig` — the same unwrapping the runtime does before the
@@ -262,5 +264,47 @@ describe('output-resilience keys — maxTokens / proseFallback (issue #102, KD-I
     expect(resolved.enabled).toBe(true)
     expect(resolved.maxTokens).toBe(4096)
     expect(resolved.proseFallback).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Reasoning effort key — reasoningEffort (plan dsh-advisor-reasoning-effort, T1)
+// ---------------------------------------------------------------------------
+
+describe('reasoningEffort key (plan dsh-advisor-reasoning-effort, T1)', () => {
+  it('resolves an absent key to undefined (= automatic: the model\'s smallest declared effort)', () => {
+    expect(unwrapAdvisorConfig(Config({})).reasoningEffort).toBeUndefined()
+    expect(resolveAdvisorConfig({ provider: 'p', model: 'm' }).reasoningEffort).toBeUndefined()
+  })
+
+  it('passes a configured effort id through the volatile unwrap unchanged', () => {
+    expect(unwrapAdvisorConfig(Config({ reasoningEffort: 'high' })).reasoningEffort).toBe('high')
+    expect(resolveAdvisorConfig({ provider: 'p', model: 'm', reasoningEffort: 'low' })).toMatchObject({
+      enabled: true,
+      reasoningEffort: 'low',
+    })
+  })
+
+  it('normalizes an empty / whitespace-only value to undefined (empty = automatic)', () => {
+    expect(unwrapAdvisorConfig(Config({ reasoningEffort: '' })).reasoningEffort).toBeUndefined()
+    expect(unwrapAdvisorConfig(Config({ reasoningEffort: '   ' })).reasoningEffort).toBeUndefined()
+    expect(resolveAdvisorConfig({ provider: 'p', model: 'm', reasoningEffort: '' }).reasoningEffort).toBeUndefined()
+  })
+
+  it('trims padding around a configured effort id (it must match the model\'s declared id exactly)', () => {
+    expect(unwrapAdvisorConfig(Config({ reasoningEffort: ' high ' })).reasoningEffort).toBe('high')
+  })
+
+  it('resolves the key to a volatile reference (the no-remount edit channel)', () => {
+    const resolved: Record<string, unknown> = Config({ reasoningEffort: 'high' })
+    const field = resolved['reasoningEffort']
+    expect(typeof field === 'object' && field !== null && 'get' in field && typeof field.get === 'function').toBe(true)
+  })
+
+  it('keeps unknown-key rejection strict with the new key in CONFIG_KEYS (near-miss + wrong type stay rejects)', () => {
+    expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', reasoningEfforts: 'high' }))
+      .toThrow(/unknown config key "reasoningEfforts"/)
+    expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', reasoningEffort: 3 as never }))
+      .toThrow()
   })
 })

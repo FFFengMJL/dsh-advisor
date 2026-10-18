@@ -74,33 +74,42 @@ type FakeResponse =
   | { readonly hang: true }
   | { readonly gate: Promise<void>; readonly chunks: readonly StreamChunk[] }
 
-/** Simulated model capability for {@link FakeLlm.resolveModelInfo}. */
-type FakeCapability = 'off' | 'none' | 'throw'
+/** An explicit declared efforts list (least → greatest, per dsh-llm). */
+interface FakeEfforts {
+  readonly efforts: readonly string[]
+}
+
+/**
+ * Simulated model capability for {@link FakeLlm.resolveModelInfo}: 'off' =
+ * deepseek-style declared efforts (default); 'none' = base adapter, no
+ * reasoning metadata; 'throw' = resolution failure; {@link FakeEfforts} = any
+ * explicit declared list (e.g. `['low', 'high']`, whose smallest entry is not
+ * 'off').
+ */
+type FakeCapability = 'off' | 'none' | 'throw' | FakeEfforts
 
 class FakeLlm {
   readonly calls: GenerateOptions[] = []
 
   constructor(
     private readonly responses: readonly FakeResponse[],
-    /** 'off' = deepseek-style declared efforts (default); 'none' = base adapter, no reasoning metadata; 'throw' = resolution failure. Public + mutable: the no-latch test flips it mid-runtime. */
+    /** See {@link FakeCapability}. Public + mutable: the no-latch test flips it mid-runtime. */
     public capability: FakeCapability = 'off',
   ) {}
 
   resolveModelInfo(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    if (this.capability === 'throw') return Promise.reject(new Error('capability resolution failed'))
-    return Promise.resolve(
-      this.capability === 'off'
-        ? {
-            provider,
-            id: model,
-            name: model,
-            reasoning: {
-              efforts: [{ id: ReasoningEffortId('off'), name: 'Off' }, { id: ReasoningEffortId('high'), name: 'High' }],
-              defaultEffort: ReasoningEffortId('off'),
-            },
-          }
-        : { provider, id: model, name: model },
-    )
+    const capability = this.capability
+    if (capability === 'throw') return Promise.reject(new Error('capability resolution failed'))
+    const declared = capability === 'none' ? [] : capability === 'off' ? ['off', 'high'] : capability.efforts
+    const base = { provider, id: model, name: model }
+    if (declared.length === 0) return Promise.resolve(base)
+    return Promise.resolve({
+      ...base,
+      reasoning: {
+        efforts: declared.map((id) => ({ id: ReasoningEffortId(id), name: id })),
+        defaultEffort: ReasoningEffortId(declared[0]!),
+      },
+    })
   }
 
   stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -372,46 +381,44 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     expect('tools' in llm.calls[1]!).toBe(false)
   })
 
-  it('logs the thinking-off-unavailable line once per runtime, not per call', async () => {
-    const debug = vi.fn()
-    const warn = vi.fn()
-    const llm = new FakeLlm(
-      [
-        { chunks: textReply('{"note":"first"}') },
-        { chunks: textReply('{"note":"second"}') },
-      ],
-      'none',
-    )
-    const { runtime, notes } = makeRuntime(llm, { logger: { debug, warn } })
+})
 
-    runtime.enqueue(delta('update one'))
-    await runtime.waitForDrain()
-    runtime.enqueue(delta('update two'))
+// ---------------------------------------------------------------------------
+// Reasoning effort selection — plan dsh-advisor-reasoning-effort T1:
+// RD-1 default = the model's SMALLEST declared effort; RD-2 a configured
+// effort is capability-gated (declared → send it; mismatch → smallest + one
+// warn per runtime); no reasoning metadata → omit the option entirely.
+// ---------------------------------------------------------------------------
+
+describe('AdvisorRuntime — reasoning effort selection (plan dsh-advisor-reasoning-effort)', () => {
+  it('defaults to the smallest declared effort when nothing is configured (RD-1)', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"default effort"}') }], { efforts: ['low', 'high'] })
+    const { runtime } = makeRuntime(llm)
+
+    runtime.enqueue(delta('update'))
     await runtime.waitForDrain()
 
-    expect(notes).toEqual([
-      { note: 'first', severity: 'nit' },
-      { note: 'second', severity: 'nit' },
-    ])
-    // The definitive no-'off' verdict is logged once; the second delta hits
-    // the cached verdict and stays silent.
-    const unavailable = debug.mock.calls.filter(
-      ([message]) => typeof message === 'string' && message.startsWith('advisor: thinking-off unavailable'),
-    )
-    expect(unavailable).toHaveLength(1)
+    expect(llm.calls[0]!.reasoningEffort).toBe(ReasoningEffortId('low'))
   })
 
-  it('never logs the thinking-off-unavailable line for a resolution failure', async () => {
+  it('sends the configured effort when the model declares it', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"configured effort"}') }], { efforts: ['low', 'high'] })
+    const { runtime } = makeRuntime(llm, { reasoningEffort: 'high' })
+
+    runtime.enqueue(delta('update'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls[0]!.reasoningEffort).toBe(ReasoningEffortId('high'))
+  })
+
+  it('falls back to the smallest declared effort and warns once per runtime when the configured effort is undeclared (RD-2)', async () => {
     const debug = vi.fn()
     const warn = vi.fn()
     const llm = new FakeLlm(
-      [
-        { chunks: textReply('{"note":"first"}') },
-        { chunks: textReply('{"note":"second"}') },
-      ],
-      'throw',
+      [{ chunks: textReply('{"note":"first"}') }, { chunks: textReply('{"note":"second"}') }],
+      { efforts: ['low', 'high'] },
     )
-    const { runtime, notes } = makeRuntime(llm, { logger: { debug, warn } })
+    const { runtime, notes } = makeRuntime(llm, { reasoningEffort: 'off', logger: { debug, warn } })
 
     runtime.enqueue(delta('update one'))
     await runtime.waitForDrain()
@@ -422,12 +429,56 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
       { note: 'first', severity: 'nit' },
       { note: 'second', severity: 'nit' },
     ])
-    // Resolution failures get no log-once latch of their own: the unavailable
-    // line never fires on a throw.
-    const unavailable = debug.mock.calls.filter(
-      ([message]) => typeof message === 'string' && message.startsWith('advisor: thinking-off unavailable'),
+    // NEVER the undeclared id: both calls carry the smallest declared effort.
+    expect(llm.calls.map((options) => options.reasoningEffort)).toEqual([
+      ReasoningEffortId('low'),
+      ReasoningEffortId('low'),
+    ])
+    // The mismatch is reported once per runtime, not once per call.
+    const warnings = warn.mock.calls.filter(
+      ([message]) => typeof message === 'string' && message.startsWith('advisor: configured reasoningEffort'),
     )
-    expect(unavailable).toHaveLength(0)
+    expect(warnings).toHaveLength(1)
+  })
+
+  it('treats an empty / whitespace-only configured effort as automatic (smallest declared, no warn)', async () => {
+    const warn = vi.fn()
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"empty means auto"}') }], { efforts: ['low', 'high'] })
+    const { runtime } = makeRuntime(llm, { reasoningEffort: '  ', logger: { debug: vi.fn(), warn } })
+
+    runtime.enqueue(delta('update'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls[0]!.reasoningEffort).toBe(ReasoningEffortId('low'))
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('omits reasoningEffort when the model declares no reasoning metadata, even with a configured value', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"no metadata"}') }], 'none')
+    const { runtime } = makeRuntime(llm, { reasoningEffort: 'high' })
+
+    runtime.enqueue(delta('update'))
+    await runtime.waitForDrain()
+
+    expect('reasoningEffort' in llm.calls[0]!).toBe(false)
+  })
+
+  it('does not cache a resolution failure: the configured effort applies once the model resolves', async () => {
+    const llm = new FakeLlm(
+      [{ chunks: textReply('{"note":"first"}') }, { chunks: textReply('{"note":"second"}') }],
+      'throw',
+    )
+    const { runtime } = makeRuntime(llm, { reasoningEffort: 'high' })
+
+    runtime.enqueue(delta('update one'))
+    await runtime.waitForDrain()
+    expect('reasoningEffort' in llm.calls[0]!).toBe(false)
+
+    llm.capability = { efforts: ['low', 'high'] }
+    runtime.enqueue(delta('update two'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls[1]!.reasoningEffort).toBe(ReasoningEffortId('high'))
   })
 })
 

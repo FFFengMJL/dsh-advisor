@@ -5,7 +5,10 @@
  * validate the plugin row config: it applies defaults (`immuneTurns` 3,
  * `maxDeltaMessages` 60, `systemPrompt` "", `maxTokens` 768,
  * `proseFallback` false) and enforces types/bounds (integers ≥ 0; maxTokens
- * 128..16384). All seven live fields are declared `.volatile()`:
+ * 128..16384). `reasoningEffort` has NO default — an absent value means
+ * "automatic" (the smallest effort the resolved model declares), which no
+ * concrete default can express. All eight live fields are declared
+ * `.volatile()`:
  * the Loader commits edits to them into the running fiber's references WITHOUT
  * a remount (dsh 0.1.7-rc.1 — the settings.yaml user layer is gone), so
  * `apply` receives each field as a `{ get() }` reference and every read must
@@ -65,6 +68,18 @@ export interface AdvisorConfig {
    * semantics), keeping the default behavior byte-identical.
    */
   readonly proseFallback?: boolean
+  /**
+   * Reasoning effort for one advisor call (plan dsh-advisor-reasoning-effort,
+   * RD-1/RD-2): a model-declared effort id. Absent/empty = automatic — the
+   * runtime sends the SMALLEST effort the resolved model declares
+   * (`reasoning.efforts[0]`) and omits the option when the model declares no
+   * reasoning metadata. Optional in the raw contract with NO default: the
+   * runtime capability-gates the value (an id the model does not declare
+   * falls back to the smallest declared effort with one warn per runtime),
+   * and an empty/whitespace value normalizes to `undefined` on the snapshot
+   * ({@link unwrapAdvisorConfig}) so "empty" and "absent" cannot diverge.
+   */
+  readonly reasoningEffort?: string
 }
 
 /** Config after the explicit model gate (spec §5.2) — consumed by T4/T6. */
@@ -84,6 +99,12 @@ export interface ResolvedAdvisorConfig {
   readonly maxTokens?: number
   /** Prose fallback switch (KD-I2); absent on plain-object entries → runtime default false. */
   readonly proseFallback?: boolean
+  /**
+   * Reasoning effort id (RD-1/RD-2); absent/empty = automatic — the runtime
+   * sends the smallest effort the resolved model declares, or omits the
+   * option when the model declares no reasoning metadata.
+   */
+  readonly reasoningEffort?: string
   /** Present iff the advisor is disabled by the explicit model gate. */
   readonly disabledReason?: string
 }
@@ -102,6 +123,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'maxDeltaMessages',
   'maxTokens',
   'proseFallback',
+  'reasoningEffort',
 ])
 
 /**
@@ -148,6 +170,9 @@ export const Config = z.object({
   maxDeltaMessages: z.number().step(1).min(0).default(60).volatile(),
   maxTokens: z.number().step(1).min(128).max(16384).default(768).volatile(),
   proseFallback: z.boolean().default(false).volatile(),
+  // No default (RD-1): an absent value means automatic, and schemastery's
+  // `default()` would persist a concrete effort as the "unconfigured" value.
+  reasoningEffort: z.string().volatile(),
 })
 
 function isNonEmptyString(value: string | undefined): value is string {
@@ -176,6 +201,8 @@ export interface VolatileAdvisorConfig {
   readonly maxTokens?: unknown
   /** Optional like {@link AdvisorConfig.proseFallback}: plain entries may omit it; the Loader path always carries it. */
   readonly proseFallback?: unknown
+  /** Optional like {@link AdvisorConfig.reasoningEffort}: plain entries may omit it; the Loader path always carries it. */
+  readonly reasoningEffort?: unknown
 }
 
 /**
@@ -189,6 +216,19 @@ function unwrapReference<T>(value: unknown): T {
     return (value as { get(): T }).get()
   }
   return value as T
+}
+
+/**
+ * Normalize the `reasoningEffort` key (RD-1): an empty/whitespace-only value
+ * means AUTOMATIC — the same as an absent key — and resolves to `undefined`
+ * so the two cannot diverge downstream. A non-empty value is trimmed; the id
+ * must match one the model declares exactly, and the TUI surfaces it through
+ * a free-text field where stray padding would otherwise defeat the match.
+ */
+function normalizeReasoningEffort(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
 }
 
 /**
@@ -213,7 +253,7 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
   // The raw side is loose on purpose: the schema-removed `enabled` is not a
   // VolatileAdvisorConfig member but can arrive on any plain entry — the cast
   // widens only to let the destructure strip it.
-  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, maxTokens, proseFallback, ...rest } =
+  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, maxTokens, proseFallback, reasoningEffort, ...rest } =
     raw as VolatileAdvisorConfig & { readonly enabled?: unknown }
   return {
     ...rest,
@@ -224,6 +264,7 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
     maxDeltaMessages: unwrapReference<number>(maxDeltaMessages),
     maxTokens: unwrapReference<number | undefined>(maxTokens),
     proseFallback: unwrapReference<boolean | undefined>(proseFallback),
+    reasoningEffort: normalizeReasoningEffort(unwrapReference<unknown>(reasoningEffort)),
   }
 }
 

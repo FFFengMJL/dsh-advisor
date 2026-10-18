@@ -55,6 +55,7 @@ import type {
   FinishReason,
   GenerateOptions,
   LlmFailure,
+  LlmReasoningEffortInfo,
   LlmResolvedModelInfo,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
@@ -91,11 +92,14 @@ export interface AdvisorLlm {
   stream(options: GenerateOptions): AsyncIterable<StreamChunk>
   /**
    * Optional capability query (LlmRuntime exposes it; injected fakes may not).
-   * Used to capability-gate `reasoningEffort` (qc2 W-1 / qc1 W-1 / qc3 F-3):
-   * the dsh LlmRuntime rejects an explicit effort for any model whose adapter
-   * does not declare it, so the runtime resolves the model's declared efforts
-   * and passes `'off'` only when the model supports it. Absent → the option
-   * is omitted and `resolveCallFor` materializes the adapter default.
+   * Used to capability-gate `reasoningEffort` (qc2 W-1 / qc1 W-1 / qc3 F-3;
+   * plan dsh-advisor-reasoning-effort RD-1/RD-2): the dsh LlmRuntime rejects
+   * an explicit effort for any model whose adapter does not declare it, so the
+   * runtime resolves the model's declared efforts (`reasoning.efforts`, least
+   * → greatest) and sends the configured id only when the model declares it —
+   * otherwise the smallest declared effort, or no option at all when the model
+   * declares none. Absent method → the option is omitted and `resolveCallFor`
+   * materializes the adapter default.
    */
   resolveModelInfo?(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>
 }
@@ -143,6 +147,16 @@ export interface AdvisorRuntimeOptions {
    * byte-identical.
    */
   readonly proseFallback?: boolean
+  /**
+   * Configured reasoning effort (plan dsh-advisor-reasoning-effort RD-1/RD-2,
+   * config key `reasoningEffort` threaded through by `index.ts`): a
+   * model-declared effort id. Absent/empty = AUTOMATIC — the runtime sends the
+   * smallest effort the resolved model declares. A value the model does not
+   * declare falls back to that smallest effort with one `warn` per runtime;
+   * an undeclared effort is never sent. No reasoning metadata → the option is
+   * omitted entirely.
+   */
+  readonly reasoningEffort?: string
   /** The llm service (`ctx.llm`); injectable for tests. */
   readonly llm: AdvisorLlm
   /**
@@ -168,13 +182,13 @@ export interface AdvisorRuntimeOptions {
  * a runaway reply cannot blow the budget"); the 5120 value (a 20x worst-case
  * per-call ceiling) was a USER-DIRECTED supersession adopted together with
  * `reasoningEffort: 'off'` when reasoning-heavy replies could starve the JSON
- * frame. With thinking-off now the capability-gated default (see
- * `resolveReasoningEffort`), the reasoning headroom is unnecessary: this 768
- * value is the latest USER-DIRECTED supersession — a modest budget that fits
- * one `ADVISOR_NOTE_MAX_CHARS` note plus the JSON frame. The runaway-reply
- * guard stays re-bounded downstream: `extractAdviceNote` caps the note at
- * `ADVISOR_NOTE_MAX_CHARS` and `buildAdvisorMessage` bounds the notice
- * summary via `boundContextSummary`.
+ * frame. With the reasoning effort now defaulting to the model's SMALLEST
+ * declared effort (see `resolveReasoningEffort`), the reasoning headroom is
+ * unnecessary: this 768 value is the latest USER-DIRECTED supersession — a
+ * modest budget that fits one `ADVISOR_NOTE_MAX_CHARS` note plus the JSON
+ * frame. The runaway-reply guard stays re-bounded downstream:
+ * `extractAdviceNote` caps the note at `ADVISOR_NOTE_MAX_CHARS` and
+ * `buildAdvisorMessage` bounds the notice summary via `boundContextSummary`.
  *
  * KD-I1 (issue #102, user direction 2026-09-29): KD-6's "code invariant, not
  * an operator switch" ruling was superseded again — the budget is now
@@ -430,6 +444,8 @@ export class AdvisorRuntime {
   private readonly systemPrompt: string
   private readonly maxTokens: number
   private readonly proseFallback: boolean
+  /** Configured effort id, normalized: `undefined` = automatic (smallest declared). */
+  private readonly reasoningEffort: string | undefined
   private readonly retryBackoffMs: number
   private readonly callTimeoutMs: number
   private readonly maxQueued: number
@@ -439,17 +455,19 @@ export class AdvisorRuntime {
   private readonly logger: AdvisorRuntimeLogger
   private readonly controller = new AbortController()
   /**
-   * Per-(provider, model) reasoning-effort capability cache (qc2 W-1 / qc1
-   * W-1 / qc3 F-3): resolving the model's declared efforts on EVERY advisor
-   * call would add an adapter round-trip per delta; one resolution per
-   * (provider, model) per runtime suffices — the route is pinned for the
-   * runtime's lifetime. ONLY definitive verdicts are cached ('off' or a
-   * successful no-'off' resolution); a resolution failure (throw or deadline
-   * abort) is never cached, so the next call resolves afresh.
+   * Per-(provider, model) declared-efforts cache (qc2 W-1 / qc1 W-1 / qc3 F-3;
+   * plan dsh-advisor-reasoning-effort): resolving the model's declared efforts
+   * on EVERY advisor call would add an adapter round-trip per delta; one
+   * resolution per (provider, model) per runtime suffices — the route is
+   * pinned for the runtime's lifetime. The cached value is the declared
+   * `reasoning.efforts` list (empty = the model declares no reasoning
+   * metadata), and ONLY definitive verdicts are cached: a resolution failure
+   * (throw or deadline abort) is never cached, so the next call resolves
+   * afresh.
    */
-  private readonly reasoningEffortCache = new Map<string, ReasoningEffortId | undefined>()
-  /** One-shot latch for the definitive no-'off' log line (log-once per runtime). */
-  private thinkingOffLogged = false
+  private readonly reasoningEffortCache = new Map<string, readonly LlmReasoningEffortInfo[]>()
+  /** One-shot latch for the undeclared-configured-effort warn line (log-once per runtime). */
+  private reasoningEffortWarned = false
 
   private readonly queue: Delta[] = []
   private state: AdvisorRuntimeStatus = 'running'
@@ -480,6 +498,10 @@ export class AdvisorRuntime {
     this.systemPrompt = options.systemPrompt
     this.maxTokens = options.maxTokens ?? ADVISOR_MAX_TOKENS
     this.proseFallback = options.proseFallback ?? false
+    // Empty/whitespace = automatic, identical to an absent option: the config
+    // snapshot already normalizes it, and re-checking here keeps a direct
+    // construction from sending '' or warning about a blank value.
+    this.reasoningEffort = options.reasoningEffort?.trim() || undefined
     this.retryBackoffMs = options.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS
     this.callTimeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
     this.maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED
@@ -856,18 +878,17 @@ export class AdvisorRuntime {
         content: [{ type: 'text', text: delta.markdown }],
         source: { kind: 'user' },
       })],
-      // n4 root-cause (host-observed "reply yielded no note"): deepseek-v4-flash
-      // is a reasoning model — with the default 256-token budget the reasoning
-      // stream consumed the whole budget, the text output came back EMPTY
-      // (finish: max-tokens), and KD-2 dropped every reply. Turn reasoning OFF
-      // so the budget goes to the JSON frame, and raise it for headroom
-      // (ADVISOR_MAX_TOKENS). The advisor's job is a short structured note —
-      // reasoning is not needed. The same applies to any reasoning-capable
-      // model, including the 0.1.5-rc.2 default deepseek-flash. Capability-gated
-      // (qc2 W-1 / qc1 W-1 / qc3 F-3): `resolveReasoningEffort` passes the
-      // branded 'off' ONLY when the resolved model declares it; otherwise the
-      // option is omitted entirely (the dsh LlmRuntime would reject an explicit
-      // effort for a model whose adapter lacks reasoning metadata with
+      // Reasoning effort (plan dsh-advisor-reasoning-effort RD-1/RD-2): the
+      // advisor's job is a short structured note, so the SMALLEST thinking
+      // weight the resolved model declares is the default — reasoning-heavy
+      // replies starve the JSON frame (n4 root-cause: deepseek-v4-flash is a
+      // reasoning model and with the default 256-token budget its reasoning
+      // stream consumed everything, the text output came back EMPTY
+      // (finish: max-tokens), and KD-2 dropped every reply).
+      // `resolveReasoningEffort` capability-gates the value (qc2 W-1 / qc1 W-1
+      // / qc3 F-3): the configured id when the model declares it, else the
+      // smallest declared effort, else nothing at all — never an effort the
+      // model does not declare (the dsh LlmRuntime would reject it with
       // UNSUPPORTED_REASONING_EFFORT, silently killing the advisor for
       // non-deepseek models — pre-n4 these worked because no effort was sent).
       ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
@@ -886,53 +907,66 @@ export class AdvisorRuntime {
   }
 
   /**
-   * Capability-gate the `reasoningEffort: 'off'` option (qc2 W-1 / qc1 W-1 /
-   * qc3 F-3): pass the branded 'off' effort only when the resolved model's
-   * `reasoning.efforts` includes it, else omit the option (`resolveCallFor`
-   * materializes the adapter default). Cached per (provider, model) — one
-   * resolution per runtime, never per call — but ONLY definitive verdicts are
-   * cached: a resolution failure (unknown route, adapter throw, or a deadline
-   * abort — n4 QC N-5) is advisory and returns `undefined` WITHOUT caching, so
-   * a transient failure retries the resolution on the next call instead of
-   * latching thinking-off unavailable for the runtime's lifetime. A definitive
-   * no-'off' verdict logs the unavailable line once per runtime
-   * (`thinkingOffLogged`); resolution failures get no log-once latch of their
-   * own. The optional `signal` (the call's deadline signal) is threaded into
-   * `resolveModelInfo`, whose contract allows adapter-owned asynchronous
-   * lookup with cancellation — a hung lookup that honors the signal aborts
-   * with the call deadline instead of wedging the drain.
+   * Resolve the `reasoningEffort` option for this call (plan
+   * dsh-advisor-reasoning-effort RD-1/RD-2; capability-gate from qc2 W-1 /
+   * qc1 W-1 / qc3 F-3): the configured id when the resolved model declares it,
+   * otherwise the SMALLEST declared effort (`efforts[0]` — dsh-llm orders the
+   * list least → greatest), and `undefined` (the option is omitted, so
+   * `resolveCallFor` materializes the adapter default) when the model declares
+   * no reasoning metadata at all. An id the model does not declare is NEVER
+   * sent — the dsh LlmRuntime would reject it with
+   * UNSUPPORTED_REASONING_EFFORT and silently kill the advisor for that model.
+   *
+   * The declared efforts are cached per (provider, model) — one resolution per
+   * runtime, never per call — but ONLY definitive verdicts are cached: a
+   * resolution failure (unknown route, adapter throw, or a deadline abort —
+   * n4 QC N-5) is advisory and returns `undefined` WITHOUT caching, so a
+   * transient failure retries the resolution on the next call instead of
+   * latching "no reasoning efforts" for the runtime's lifetime. The optional
+   * `signal` (the call's deadline signal) is threaded into `resolveModelInfo`,
+   * whose contract allows adapter-owned asynchronous lookup with cancellation
+   * — a hung lookup that honors the signal aborts with the call deadline
+   * instead of wedging the drain.
+   *
+   * A configured id the model does not declare (a leftover after switching
+   * models) falls back to the smallest declared effort and is reported ONCE
+   * per runtime (`reasoningEffortWarned`).
    */
   private async resolveReasoningEffort(signal?: AbortSignal): Promise<ReasoningEffortId | undefined> {
     const key = `${this.provider}\u0000${this.model}`
-    if (this.reasoningEffortCache.has(key)) return this.reasoningEffortCache.get(key)
-    // Method absent → definitive verdict: this runtime has no capability API
-    // at all (W-1 fallback), so 'off' is unreachable — cache and log once.
-    if (this.llm.resolveModelInfo === undefined) {
-      this.reasoningEffortCache.set(key, undefined)
-      this.logThinkingOffUnavailable('no capability API')
-      return undefined
+    let efforts = this.reasoningEffortCache.get(key)
+    if (efforts === undefined) {
+      // Method absent → definitive verdict: this runtime has no capability API
+      // at all (W-1 fallback), so no effort is declared — cache the empty list
+      // and omit the option.
+      if (this.llm.resolveModelInfo === undefined) {
+        efforts = []
+      } else {
+        try {
+          const info = await this.llm.resolveModelInfo(this.provider, this.model, signal)
+          efforts = info?.reasoning?.efforts ?? []
+        } catch {
+          // Failure (adapter throw OR deadline abort — one class): the call
+          // proceeds without the option, but the failure is NOT cached — the
+          // next call resolves afresh.
+          return undefined
+        }
+      }
+      this.reasoningEffortCache.set(key, efforts)
     }
-    let effort: ReasoningEffortId | undefined
-    try {
-      const info = await this.llm.resolveModelInfo(this.provider, this.model, signal)
-      effort = info?.reasoning?.efforts.some((entry) => entry.id === ReasoningEffortId('off'))
-        ? ReasoningEffortId('off')
-        : undefined
-    } catch {
-      // Failure (adapter throw OR deadline abort — one class): the call
-      // proceeds without the option, but the failure is NOT cached and gets no
-      // log-once latch — the next call resolves afresh.
-      return undefined
+    const smallest = efforts[0]
+    if (smallest === undefined) return undefined
+    const configured = this.reasoningEffort
+    if (configured === undefined) return smallest.id
+    const declared = efforts.find((entry) => entry.id === ReasoningEffortId(configured))
+    if (declared !== undefined) return declared.id
+    if (!this.reasoningEffortWarned) {
+      this.reasoningEffortWarned = true
+      this.logger.warn(
+        'advisor: configured reasoningEffort is not declared by the model — using the smallest declared effort',
+        { provider: this.provider, model: this.model, configured, fallback: smallest.id },
+      )
     }
-    this.reasoningEffortCache.set(key, effort)
-    if (effort === undefined) this.logThinkingOffUnavailable('model does not advertise thinking-off')
-    return effort
-  }
-
-  /** Emit the definitive no-'off' line exactly once per runtime. */
-  private logThinkingOffUnavailable(reason: string): void {
-    if (this.thinkingOffLogged) return
-    this.thinkingOffLogged = true
-    this.logger.debug('advisor: thinking-off unavailable', { provider: this.provider, model: this.model, reason })
+    return smallest.id
   }
 }
