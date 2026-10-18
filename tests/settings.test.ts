@@ -55,9 +55,10 @@ describe('plain-value entry (integration harness form, behavior identical to tod
     const bridge = installAdvisorSettings(ctx, entry)
     expect(bridge.source()).toEqual(entry)
     // The source still passes through the hard gate — the SSOT is unchanged.
-    // Seven keys: T1 (issue #102) added maxTokens/proseFallback to the schema
-    // with defaults, so the resolved shape carries them filled (768/false) —
-    // the resolver default-fill is part of the pinned contract.
+    // Key set: T1 (issue #102) added proseFallback to the schema with a
+    // default, so the resolved shape carries it filled (false) — the
+    // resolver default-fill is part of the pinned contract. maxTokens is
+    // gone (2026-10-18 ruling).
     expect(resolveAdvisorConfig(bridge.source())).toEqual({
       enabled: true,
       provider: 'deepseek',
@@ -65,7 +66,6 @@ describe('plain-value entry (integration harness form, behavior identical to tod
       systemPrompt: '',
       immuneTurns: 5,
       maxDeltaMessages: 60,
-      maxTokens: 768,
       proseFallback: false,
     })
   })

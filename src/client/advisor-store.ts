@@ -100,12 +100,6 @@ export interface AdvisorConfigView {
   /** Delta window; integer ≥ 0, 0 = unbounded. */
   maxDeltaMessages: number
   /**
-   * Token budget for one advisor call (KD-I1, issue #102); integer
-   * 128..16384. Absent on plain-object entries → the runtime default
-   * `ADVISOR_MAX_TOKENS` (768), mirroring src/config.ts.
-   */
-  maxTokens?: number
-  /**
    * Opt-in prose fallback switch (KD-I2, issue #102). Absent on plain-object
    * entries → the runtime default false, mirroring src/config.ts.
    */
@@ -176,7 +170,7 @@ export type ModelsEmptyReason =
 
 /**
  * The user-layer draft the form edits
- * (provider/model/systemPrompt/immuneTurns/maxDeltaMessages/maxTokens/proseFallback/reasoningEffort).
+ * (provider/model/systemPrompt/immuneTurns/maxDeltaMessages/proseFallback/reasoningEffort).
  */
 export interface AdvisorDraft {
   /** Provider route; required (non-empty). */
@@ -189,12 +183,6 @@ export interface AdvisorDraft {
   immuneTurns?: number
   /** Delta window; integer ≥ 0, default 60, 0 = unbounded. Cleared input → undefined (left unchanged on apply). */
   maxDeltaMessages?: number
-  /**
-   * Token budget for one advisor call (KD-I1, issue #102); integer
-   * 128..16384, default 768. Cleared input → undefined (left unchanged on
-   * apply).
-   */
-  maxTokens?: number
   /** Opt-in prose fallback (KD-I2, issue #102); default false. */
   proseFallback?: boolean
   /**
@@ -314,10 +302,10 @@ function draftOfConfig(config: AdvisorConfigView | undefined): AdvisorDraft {
     maxDeltaMessages: numberField(config?.maxDeltaMessages, 60),
     // The scalar fields show the effective values: the gateway returns the
     // resolved config, so the wire carries both keys whenever the resolver
-    // defined them (the schema defaults fill 768/false on the normal path);
-    // these fallbacks cover the containment wires whose raw entry omitted
-    // the keys (the gateway's S1 fallback mirrors the raw source verbatim).
-    maxTokens: numberField(config?.maxTokens, 768),
+    // defined them (the schema default fills false on the normal path); this
+    // fallback covers the containment wires whose raw entry omitted the key
+    // (the gateway's S1 fallback mirrors the raw source verbatim). No
+    // maxTokens seed since the 2026-10-18 ruling (budget removed).
     proseFallback: typeof config?.proseFallback === 'boolean' ? config.proseFallback : false,
     // Thinking-effort override (T1 key): absent on the wire → automatic —
     // the seed never invents a value the host does not pin.
@@ -806,19 +794,6 @@ export class AdvisorSettingsStore {
     this.setField('maxDeltaMessages', this.clampInt(value, this.store.getSnapshot().draft.maxDeltaMessages ?? 0))
   }
 
-  /**
-   * Set the advisor token budget (KD-I1, issue #102: int clamped into
-   * 128..16384 — the schema bounds; non-numeric input keeps the current
-   * value; undefined clears → omitted from patch).
-   */
-  setMaxTokens(value: number | undefined): void {
-    if (value === undefined) {
-      this.clearField('maxTokens')
-      return
-    }
-    this.setField('maxTokens', this.clampInt(value, this.store.getSnapshot().draft.maxTokens ?? 768, 128, 16384))
-  }
-
   /** Set the opt-in prose fallback (KD-I2, issue #102). */
   setProseFallback(value: boolean): void {
     this.setField('proseFallback', value)
@@ -951,7 +926,7 @@ export class AdvisorSettingsStore {
    */
   private patchFor(draft: AdvisorDraft): Record<string, unknown> {
     const patch: Record<string, unknown> = {}
-    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'maxTokens', 'proseFallback'] as const
+    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'proseFallback'] as const
     for (const key of always) {
       const next = draft[key]
       // A cleared number input (undefined) means "leave the stored value

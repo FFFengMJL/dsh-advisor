@@ -45,7 +45,6 @@ import type { CommandDefinition, CommandResult } from '@deepseek-ai/dsh-commands
 import { CommandId } from '@deepseek-ai/dsh-commands'
 import * as advisorPlugin from '../src/index'
 import type { AdvisorConfig } from '../src/config'
-import { ADVISOR_MAX_TOKENS } from '../src/advisor-runtime'
 
 // n4 QC F-6: the single-reviewer guard is process-global; each test case
 // composes a fresh harness, so the flag must reset between cases (production
@@ -422,7 +421,7 @@ describe('integration — full advisor loop (spec §7)', () => {
     const options = adapter.requests[0]!
     expect(options.provider).toBe('stub')
     expect(options.model).toBe('stub-model')
-    expect(options.maxTokens).toBe(ADVISOR_MAX_TOKENS)
+    expect('maxTokens' in options).toBe(false) // 2026-10-18 ruling: no model-side budget
     expect('purpose' in options).toBe(false) // KD-5: purpose left unset
     const delta = deltaTextOf(options)
     expect(delta).toContain('### Session update')

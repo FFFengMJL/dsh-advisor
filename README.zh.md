@@ -41,14 +41,15 @@ dsh plugin --profile dsh-tui add dsh-advisor  # dsh-tui 终端 profile
     systemPrompt: ""             # 可选；"" = 内置评审 prompt
     immuneTurns: 3               # 整数 ≥ 0，默认 3 —— 打断性送达后的冷却步数
     maxDeltaMessages: 60         # 整数 ≥ 0，默认 60 —— delta 窗口；0 = 无上限
-    maxTokens: 768               # 整数 128..16384，默认 768 —— 单次评审的 token 预算（issue #102）
     proseFallback: false         # 布尔，默认 false —— 无 JSON 帧时将散文回复作为 nit note 投递（opt-in）
     reasoningEffort: ""          # 可选；缺省/"" = 自动 —— 所选模型声明的最小思考权重（取值：该模型声明的 effort id）
 ```
 
 `provider` 与 `model` 为**必填**：任一缺失或为空是一个硬门禁——advisor 不会发起任何模型调用，并报告带原因的禁用状态（disabled-with-reason）；未知配置键会被拒绝。
 
-若 advisor 已启用、runtime 状态正常却从不说话，请运行 `/advisor status`：非零的 `Dropped:` 行会指明类别——`empty`（空回复）表示思考型模型把 token 预算耗在了 reasoning 上（调高 `maxTokens`，整数 128..16384；issue 报告者实测 4096 可恢复产出）；`unparsed`（无帧散文）表示正文不含 JSON 帧的回复被丢弃（开启 `proseFallback`，将清理后的散文作为低严重级 note 投递；JSON 帧始终优先）。详见 [docs/configuration.md](docs/configuration.md)。
+**没有模型侧 token 预算**（2026-10-18 用户裁决）：OpenAI 兼容 API 上 `max_tokens` 把 reasoning 与正文一并计入，思考型模型下旧 `maxTokens` 预算会间歇性耗尽、正文为空（空回复 → `EMPTY_RESPONSE` → 静默丢 delta）。advisor 调用现在完全不发送 `maxTokens`；输出由抽取侧 `ADVISOR_NOTE_MAX_CHARS`（768 字符）封顶，延迟由 60s 调用 deadline 约束。存量 profile 里残留的 `maxTokens:` 行与已移除的 `enabled` 键同样被静默容忍并剥离。
+
+若 advisor 已启用、runtime 状态正常却从不说话，请运行 `/advisor status`：非零的 `Dropped:` 行会指明类别——`empty`（空回复）表示模型返回了完成但无正文的响应；`unparsed`（无帧散文）表示正文不含 JSON 帧的回复被丢弃（开启 `proseFallback`，将清理后的散文作为低严重级 note 投递；JSON 帧始终优先）。详见 [docs/configuration.md](docs/configuration.md)。
 
 同一组键可在**三个配置面**读取与编辑（只有一份存储——上面的 advisor entry config；各处使用同一组键与同一个硬门禁，宿主侧门禁始终是所有路径上的最后防线）：
 
@@ -56,7 +57,7 @@ dsh plugin --profile dsh-tui add dsh-advisor  # dsh-tui 终端 profile
 2. **dsh web 的「插件」页 —— dsh-advisor 组合包自己的页面** —— Advisor **卡片**（bundle key `dsh-advisor`），一个**平铺**的设置表单（页面标题/描述来自插件 locale 元数据），含只列出系统内已配置 provider 及其模型的 provider/model 选择框与可选字段。保存写入 advisor entry 的 config（经 config editor 落入 profile 补丁层），运行中的会话立即生效，无需重启。卡片要求 dsh web 构建的 shell 声明了 `plugins.bundle.config` 卡片 slot（dsh ≥ 0.1.7-rc.1）并能加载 `dsh.client` 声明包；它通过官方 `GatewayService` RPC 通道读写该配置（`/api/advisor/get` + `/api/advisor/set`），不受 settings 暴露白名单门控。卡片还会在必填字段为空时阻止保存。
 3. **`/advisor` 指令** —— 按会话且临时：翻转的是会话级 override、并为会话钉住评审模型，从不修改持久化配置（见[验证](#验证)）。
 
-在 **dsh-tui** profile 中，同样的七个键可在 TUI `/settings` 屏幕编辑：运行 `dsh --profile dsh-tui`、打开 `/settings`，编辑 **Advisor** 分节（`provider` / `model` / `immuneTurns` / `maxDeltaMessages` / `maxTokens` / `proseFallback` / `reasoningEffort`（留空 = 自动），每项均带中英文标签与提示）。编辑先暂存，保存时经 revision 栅栏保护的 `settings.mutate` 写入 web 卡片所写的同一份 advisor entry config，并 live 重应用、无需重启。`systemPrompt` **不是** TUI 字段（TUI text 控件为单行；多行 prompt 会被截断）——请经 web 卡片或 profile 补丁层编辑。该分节要求 dsh-tui ≥ v0.8.0（随 v0.8.0+ 组合包的 `dsh-tui-settings-sections` 行提供）；旧版 dsh-tui 会干净地 no-op，profile 补丁层仍是编辑路径。`/advisor config` 仍是只读回读，seam 挂载时其编辑提示指向 `/settings` 屏幕。保存行为与 web 卡片不同：TUI seam 没有跨字段校验，一次保存可能把空 `provider`/`model` 写入——显式模型门禁会在运行时把它解析为 disabled-with-reason（可见于 `/advisor status` 与 `/advisor config`）；web 卡片则会直接阻止这样的保存。完整参考 → [docs/configuration.md](docs/configuration.md)。
+在 **dsh-tui** profile 中，同样的六个键可在 TUI `/settings` 屏幕编辑：运行 `dsh --profile dsh-tui`、打开 `/settings`，编辑 **Advisor** 分节（`provider` / `model` / `immuneTurns` / `maxDeltaMessages` / `proseFallback` / `reasoningEffort`（留空 = 自动），每项均带中英文标签与提示）。编辑先暂存，保存时经 revision 栅栏保护的 `settings.mutate` 写入 web 卡片所写的同一份 advisor entry config，并 live 重应用、无需重启。`systemPrompt` **不是** TUI 字段（TUI text 控件为单行；多行 prompt 会被截断）——请经 web 卡片或 profile 补丁层编辑。该分节要求 dsh-tui ≥ v0.8.0（随 v0.8.0+ 组合包的 `dsh-tui-settings-sections` 行提供）；旧版 dsh-tui 会干净地 no-op，profile 补丁层仍是编辑路径。`/advisor config` 仍是只读回读，seam 挂载时其编辑提示指向 `/settings` 屏幕。保存行为与 web 卡片不同：TUI seam 没有跨字段校验，一次保存可能把空 `provider`/`model` 写入——显式模型门禁会在运行时把它解析为 disabled-with-reason（可见于 `/advisor status` 与 `/advisor config`）；web 卡片则会直接阻止这样的保存。完整参考 → [docs/configuration.md](docs/configuration.md)。
 
 ![dsh web「插件」页（dsh-advisor 组合包页面）上的 Advisor 卡片](docs/screenshots/advisor-settings-card.webp)
 

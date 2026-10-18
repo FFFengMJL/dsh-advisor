@@ -500,19 +500,19 @@ describe('advisorStatusText (the /advisor status surface, spec §6)', () => {
     const dropped = text.split('\n').filter((line) => line.startsWith('Dropped:'))
     expect(dropped).toHaveLength(1)
     expect(dropped[0]).toBe(
-      'Dropped: 3 empty (last 2026-08-10T11:20:00.000Z) — consider raising the maxTokens setting'
+      'Dropped: 3 empty (last 2026-08-10T11:20:00.000Z) — the model returned a completed response with no content'
       + '; 1 unparsed (last 2026-08-11T09:00:00.000Z) — consider enabling the proseFallback setting',
     )
   })
 
-  it('empty-only drop: the maxTokens hint, no unparsed fragment', () => {
+  it('empty-only drop: the empty-content hint, no unparsed fragment', () => {
     const text = advisorStatusText(baseStatus({
       enabled: true,
       runtimeStatus: 'running',
       emptyReplies: 2,
       lastEmptyReplyAt: new Date('2026-08-10T11:20:00Z').getTime(),
     }))
-    expect(text).toContain('Dropped: 2 empty (last 2026-08-10T11:20:00.000Z) — consider raising the maxTokens setting')
+    expect(text).toContain('Dropped: 2 empty (last 2026-08-10T11:20:00.000Z) — the model returned a completed response with no content')
     expect(text).not.toContain('unparsed')
     expect(text).not.toContain('proseFallback')
   })
@@ -535,7 +535,7 @@ describe('advisorStatusText (the /advisor status surface, spec §6)', () => {
       runtimeStatus: 'running',
       emptyReplies: 2,
     }))
-    expect(text).toContain('Dropped: 2 empty — consider raising the maxTokens setting')
+    expect(text).toContain('Dropped: 2 empty — the model returned a completed response with no content')
     expect(text).not.toContain('(last ')
   })
 })
@@ -569,17 +569,19 @@ describe('advisorConfigText (the /advisor config surface, composed session-less 
     expect(text).not.toContain('maxDeltaMessages: 0')
   })
 
-  it('renders the issue-#102 keys when the composed config carries them (S-1 seven-key readback)', () => {
+  it('renders the issue-#102 keys when the composed config carries them (S-1 key readback)', () => {
     const text = advisorConfigText(baseConfig({
       enabled: true,
-      maxTokens: 4096,
       proseFallback: true,
     }))
-    expect(text).toContain('maxTokens: 4096')
     expect(text).toContain('proseFallback: on')
-    const off = advisorConfigText(baseConfig({ enabled: true, maxTokens: 768, proseFallback: false }))
-    expect(off).toContain('maxTokens: 768')
+    const off = advisorConfigText(baseConfig({ enabled: true, proseFallback: false }))
     expect(off).toContain('proseFallback: off')
+    // 2026-10-18 ruling: the model-side budget is gone — the renderer never
+    // prints a maxTokens line, even for a composed read that would have
+    // carried one before the removal.
+    expect(text).not.toContain('maxTokens')
+    expect(off).not.toContain('maxTokens')
   })
 
   it('omits the issue-#102 lines when the composed config does not carry them (absent is never rendered as a value)', () => {
@@ -592,7 +594,7 @@ describe('advisorConfigText (the /advisor config surface, composed session-less 
     expect(text).not.toContain('proseFallback:')
   })
 
-  it('renders the reasoningEffort line when the composed config carries it (eighth key)', () => {
+  it('renders the reasoningEffort line when the composed config carries it', () => {
     const text = advisorConfigText(baseConfig({ enabled: true, reasoningEffort: 'high' }))
     expect(text).toContain('reasoningEffort: high')
   })
@@ -600,7 +602,7 @@ describe('advisorConfigText (the /advisor config surface, composed session-less 
   it('omits the reasoningEffort line when the composed config does not carry it (absent = automatic)', () => {
     // An absent/empty value means AUTOMATIC (the smallest effort the model
     // declares) — the renderer never invents an 'auto' value for it (same
-    // presence rule as maxTokens/proseFallback).
+    // presence rule as proseFallback).
     const text = advisorConfigText(baseConfig({ enabled: true }))
     expect(text).not.toContain('reasoningEffort')
   })

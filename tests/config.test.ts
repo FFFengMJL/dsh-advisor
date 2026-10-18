@@ -4,10 +4,12 @@
  * Contract under test:
  * - The exported schemastery `Config` schema (the cordis Loader path) applies
  *   defaults (`immuneTurns` 3, `maxDeltaMessages` 60, `systemPrompt` "",
- *   `maxTokens` 768, `proseFallback` false) and enforces types/bounds
- *   (int ≥ 0; maxTokens 128..16384). `reasoningEffort` deliberately has NO
+ *   `proseFallback` false) and enforces types/bounds (int ≥ 0). There is NO
+ *   `maxTokens` key (2026-10-18 user ruling: the model-side token budget is
+ *   removed — output is bounded at extraction by ADVISOR_NOTE_MAX_CHARS).
+ *   `reasoningEffort` deliberately has NO
  *   default (an absent value means automatic — the smallest effort the
- *   resolved model declares). All eight live fields are `.volatile()`:
+ *   resolved model declares). All seven live fields are `.volatile()`:
  *   `Config(raw)` resolves them to `{ get() }` references (the loader's
  *   no-remount edit channel), and the reads below go through
  *   `unwrapAdvisorConfig` — the same unwrapping the runtime does before the
@@ -17,11 +19,12 @@
  *   switch), so when `provider`/`model` is missing or empty it resolves to a
  *   disabled-with-reason config (no model call); a complete pair resolves
  *   enabled.
- * - Unknown config keys are rejected (strict schema) — with ONE tolerated
- *   legacy exception: the 2026-09-26-removed `enabled` key is accepted and
- *   silently dropped (2026-09-27 user ruling — a stored profile still
- *   carrying it loads cleanly instead of being rejected; the row toggle
- *   replaced it, the dead value is never read and never re-persisted).
+ * - Unknown config keys are rejected (strict schema) — with TWO tolerated
+ *   legacy exceptions: the 2026-09-26-removed `enabled` key (2026-09-27 user
+ *   ruling — the row toggle replaced it, the dead value is never read and
+ *   never re-persisted) and the 2026-10-18-removed `maxTokens` key (the
+ *   model-side budget is gone; a stored profile still carrying it loads
+ *   cleanly, the dead value is never read and never re-persisted).
  */
 
 import { describe, expect, it } from 'vitest'
@@ -33,7 +36,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
     // fiber's references. A resolved field must duck-type as `{ get() }` —
     // every runtime read (unwrapAdvisorConfig → the gate) depends on it.
     const resolved: Record<string, unknown> = Config({})
-    for (const key of ['provider', 'model', 'systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'maxTokens', 'proseFallback']) {
+    for (const key of ['provider', 'model', 'systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'proseFallback']) {
       expect(typeof (resolved[key] as { get?: unknown }).get, key).toBe('function')
     }
   })
@@ -43,7 +46,6 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       systemPrompt: '',
       immuneTurns: 3,
       maxDeltaMessages: 60,
-      maxTokens: 768,
       proseFallback: false,
     })
   })
@@ -55,7 +57,6 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       systemPrompt: 'custom reviewer prompt',
       immuneTurns: 5,
       maxDeltaMessages: 10,
-      maxTokens: 4096,
       proseFallback: true,
     }))).toEqual({
       provider: 'deepseek',
@@ -63,7 +64,6 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       systemPrompt: 'custom reviewer prompt',
       immuneTurns: 5,
       maxDeltaMessages: 10,
-      maxTokens: 4096,
       proseFallback: true,
     })
   })
@@ -157,7 +157,6 @@ describe('explicit model gate (S4 / spec §5.2)', () => {
       systemPrompt: 'custom',
       immuneTurns: 5,
       maxDeltaMessages: 0,
-      maxTokens: 4096,
       proseFallback: true,
     })).toEqual({
       enabled: true,
@@ -166,7 +165,6 @@ describe('explicit model gate (S4 / spec §5.2)', () => {
       systemPrompt: 'custom',
       immuneTurns: 5,
       maxDeltaMessages: 0,
-      maxTokens: 4096,
       proseFallback: true,
     })
   })
@@ -205,9 +203,77 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       systemPrompt: '',
       immuneTurns: 3,
       maxDeltaMessages: 60,
-      maxTokens: 768,
       proseFallback: false,
     })
+  })
+
+  it('tolerates and drops the legacy `maxTokens` key (2026-10-18 ruling — stored profiles load cleanly)', () => {
+    // Same migration surface as `enabled`: a stored profile still carrying a
+    // `maxTokens:` line (e.g. the operator's live workaround value 5128) is
+    // accepted but IGNORED — the budget is gone, the value never influences
+    // the resolution and is stripped from the snapshot.
+    const withPair = resolveAdvisorConfig({ maxTokens: 5128, provider: 'p', model: 'm' })
+    expect(withPair.enabled).toBe(true)
+    expect('maxTokens' in withPair).toBe(false)
+    expect(unwrapAdvisorConfig(Config({ maxTokens: 5128, provider: 'p' }))).toEqual({
+      provider: 'p',
+      systemPrompt: '',
+      immuneTurns: 3,
+      maxDeltaMessages: 60,
+      proseFallback: false,
+    })
+  })
+
+  it('tolerates and drops BOTH legacy keys at once (dual-legacy stored profile loads cleanly)', () => {
+    // The worst realistic migration surface: a stored profile still carrying
+    // `enabled:` AND `maxTokens:` alongside every live key. Both dead values
+    // are ignored (resolution keys purely on the pair) and neither key ever
+    // reaches the snapshot.
+    const withPair = resolveAdvisorConfig({
+      enabled: false,
+      maxTokens: 5128,
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      systemPrompt: 'custom reviewer prompt',
+      immuneTurns: 5,
+      maxDeltaMessages: 10,
+      proseFallback: true,
+      reasoningEffort: 'high',
+    })
+    expect(withPair.enabled).toBe(true)
+    expect(withPair.provider).toBe('deepseek')
+    expect(withPair.model).toBe('deepseek-chat')
+    // `enabled` here is the DERIVED pair-gate verdict, not the legacy value.
+    expect('maxTokens' in withPair).toBe(false)
+    expect(unwrapAdvisorConfig(Config({
+      enabled: false,
+      maxTokens: 5128,
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      systemPrompt: 'custom reviewer prompt',
+      immuneTurns: 5,
+      maxDeltaMessages: 10,
+      proseFallback: true,
+      reasoningEffort: 'high',
+    }))).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      systemPrompt: 'custom reviewer prompt',
+      immuneTurns: 5,
+      maxDeltaMessages: 10,
+      proseFallback: true,
+      reasoningEffort: 'high',
+    })
+  })
+
+  it('keeps legacy-key matching exact — case/typo near-misses stay hard rejects', () => {
+    // LEGACY_KEYS matching is exact: only `enabled` and `maxTokens` are
+    // tolerated. A casing or underscore variant is an unknown key (spec §5.2
+    // strict schema unchanged).
+    expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', maxtoken: 5128 }))
+      .toThrow(/unknown config key "maxtoken"/)
+    expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', max_token: 5128 }))
+      .toThrow(/unknown config key "max_token"/)
   })
 
   it('rejects non-object config input', () => {
@@ -218,51 +284,36 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Output-resilience keys — maxTokens / proseFallback (issue #102, KD-I1/I2)
+// Output-resilience keys — proseFallback (issue #102, KD-I2)
 // ---------------------------------------------------------------------------
 
-describe('output-resilience keys — maxTokens / proseFallback (issue #102, KD-I1/I2)', () => {
-  it('defaults maxTokens to 768 and proseFallback to false (KD-6 default unchanged)', () => {
+describe('output-resilience keys — proseFallback (issue #102, KD-I2)', () => {
+  it('defaults proseFallback to false', () => {
     const resolved = unwrapAdvisorConfig(Config({}))
-    expect(resolved.maxTokens).toBe(768)
     expect(resolved.proseFallback).toBe(false)
   })
 
-  it('treats null as absent for the new keys (schemastery nullable input → default)', () => {
-    expect(unwrapAdvisorConfig(Config({ maxTokens: null })).maxTokens).toBe(768)
+  it('treats null as absent for the key (schemastery nullable input → default)', () => {
     expect(unwrapAdvisorConfig(Config({ proseFallback: null })).proseFallback).toBe(false)
   })
 
-  it('enforces the maxTokens bounds (KD-I1: 128 floor, 16384 runaway-cost ceiling, integer step)', () => {
-    expect(() => Config({ maxTokens: 127 })).toThrow()
-    expect(() => Config({ maxTokens: 16385 })).toThrow()
-    expect(() => Config({ maxTokens: 768.5 })).toThrow()
-    expect(() => Config({ maxTokens: -4096 })).toThrow()
-    expect(unwrapAdvisorConfig(Config({ maxTokens: 128 })).maxTokens).toBe(128)
-    expect(unwrapAdvisorConfig(Config({ maxTokens: 16384 })).maxTokens).toBe(16384)
-    expect(unwrapAdvisorConfig(Config({ maxTokens: 4096 })).maxTokens).toBe(4096)
-  })
-
   it('passes configured values through the volatile unwrap', () => {
-    expect(unwrapAdvisorConfig(Config({ maxTokens: 4096, proseFallback: true }))).toMatchObject({
-      maxTokens: 4096,
+    expect(unwrapAdvisorConfig(Config({ proseFallback: true }))).toMatchObject({
       proseFallback: true,
     })
   })
 
-  it('keeps unknown-key rejection strict with the new keys in CONFIG_KEYS (near-miss stays a hard reject)', () => {
-    // The exact key set matters: a typo'd near-miss must not slip through just
-    // because the real key is now legal (spec §5.2 strict schema unchanged).
-    expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', maxToken: 4096 }))
-      .toThrow(/unknown config key "maxToken"/)
+  it('keeps unknown-key rejection strict with near-miss keys (a typo stays a hard reject)', () => {
+    // The exact key set matters: a typo'd near-miss must not slip through
+    // (spec §5.2 strict schema unchanged) — and the removed `maxTokens` key
+    // is a TOLERATED legacy drop, not a legal key.
     expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', proseFallbacks: true }))
       .toThrow(/unknown config key "proseFallbacks"/)
   })
 
-  it('accepts the new keys on a resolved config (Loader path → explicit gate)', () => {
-    const resolved = resolveAdvisorConfig({ provider: 'p', model: 'm', maxTokens: 4096, proseFallback: true })
+  it('accepts the key on a resolved config (Loader path → explicit gate)', () => {
+    const resolved = resolveAdvisorConfig({ provider: 'p', model: 'm', proseFallback: true })
     expect(resolved.enabled).toBe(true)
-    expect(resolved.maxTokens).toBe(4096)
     expect(resolved.proseFallback).toBe(true)
   })
 })

@@ -133,8 +133,9 @@ describe('no settings service (entry fallback)', () => {
     const gateway = new AdvisorConfigGateway(ctx, installAdvisorSettings(ctx, entry))
 
     expect(ctx.reflect.props['advisor']).toEqual({ type: 'service' })
-    // Seven-key wire (issue #102, qc1 W-1): the resolver fills the schema
-    // defaults, so the read path carries maxTokens/proseFallback too.
+    // Wire shape (issue #102, qc1 W-1): the resolver fills the schema
+    // defaults, so the read path carries proseFallback too. No maxTokens
+    // since the 2026-10-18 ruling (the budget is removed).
     expect(gateway.get()).toEqual({
       config: {
         enabled: true,
@@ -143,7 +144,6 @@ describe('no settings service (entry fallback)', () => {
         systemPrompt: '',
         immuneTurns: 5,
         maxDeltaMessages: 60,
-        maxTokens: 768,
         proseFallback: false,
       },
     })
@@ -189,8 +189,8 @@ describe('with a settings service (set writes the entry config)', () => {
 
     // The write rode the settings channel keyed by the ENTRY id.
     // The full-config fixture mirrors the RESOLVER's output shape — the
-    // schema defaults fill maxTokens/proseFallback (issue #102), so the
-    // seven-key shape is what the resolver and the gateway wire both carry.
+    // schema default fills proseFallback (issue #102); maxTokens is gone
+    // (2026-10-18 ruling).
     const composed: ResolvedAdvisorConfig = {
       enabled: true,
       provider: 'deepseek',
@@ -198,7 +198,6 @@ describe('with a settings service (set writes the entry config)', () => {
       systemPrompt: 'entry prompt',
       immuneTurns: 5,
       maxDeltaMessages: 60,
-      maxTokens: 768,
       proseFallback: false,
     }
     // Live: the bridge source the runtime reads reflects the write.
@@ -235,7 +234,6 @@ describe('with a settings service (set writes the entry config)', () => {
         systemPrompt: '',
         immuneTurns: 3,
         maxDeltaMessages: 10,
-        maxTokens: 768,
         proseFallback: false,
         disabledReason: expect.any(String),
       },
@@ -263,7 +261,6 @@ describe('with a settings service (set writes the entry config)', () => {
         systemPrompt: 'entry prompt',
         immuneTurns: 3,
         maxDeltaMessages: 10,
-        maxTokens: 768,
         proseFallback: false,
       },
     })
@@ -303,7 +300,6 @@ describe('with a settings service (set writes the entry config)', () => {
       systemPrompt: 'edited',
       immuneTurns: 3,
       maxDeltaMessages: 60,
-      maxTokens: 768,
       proseFallback: false,
     })
   })
@@ -522,7 +518,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
 
     const got = await connection.handler!('advisor/get', { args: {} }, signal, connection.peer)
     // Seven-key wire (issue #102, qc1 W-1): the read path carries the two new
-    // persisted keys (schema-defaulted 768/false here).
+    // persisted keys (schema-defaulted false here).
     expect(got).toEqual({
       ok: true,
       value: {
@@ -531,7 +527,6 @@ describe('typertGateway endpoint claims + payload contract', () => {
           systemPrompt: 'entry prompt',
           immuneTurns: 5,
           maxDeltaMessages: 60,
-          maxTokens: 768,
           proseFallback: false,
           disabledReason: expect.any(String),
         },
@@ -617,10 +612,12 @@ describe('typertGateway endpoint claims + payload contract', () => {
     }
   })
 
-  it('carries non-default maxTokens/proseFallback on set and through a get round-trip (seven-key wire, qc1 W-1)', async () => {
+  it('carries non-default proseFallback on set and through a get round-trip, and drops a legacy maxTokens patch key (wire, qc1 W-1)', async () => {
     // The write path always carried the new keys (schema-validated patch);
     // the READ path is the W-1 seam: the response wire and the next get must
-    // carry the persisted values, not silently strip them.
+    // carry the persisted values, not silently strip them. A maxTokens key
+    // in the patch is the 2026-10-18-removed legacy: the resolver tolerates
+    // and drops it on stored profiles, and it never appears on the wire.
     const { connection } = await composeGatewayHarness()
     const signal = new AbortController().signal
 
@@ -633,31 +630,32 @@ describe('typertGateway endpoint claims + payload contract', () => {
     expect(setResult.ok).toBe(true)
     if (setResult.ok) {
       expect(setResult.value).toMatchObject({
-        config: { enabled: true, provider: 'deepseek', model: 'deepseek-chat', maxTokens: 4096, proseFallback: true },
+        config: { enabled: true, provider: 'deepseek', model: 'deepseek-chat', proseFallback: true },
       })
+      expect('maxTokens' in (setResult.value as { config: ResolvedAdvisorConfig }).config).toBe(false)
     }
 
     const got = await connection.handler!('advisor/get', { args: {} }, signal, connection.peer)
     expect(got.ok).toBe(true)
     if (got.ok) {
       expect(got.value).toMatchObject({
-        config: { enabled: true, provider: 'deepseek', model: 'deepseek-chat', maxTokens: 4096, proseFallback: true },
+        config: { enabled: true, provider: 'deepseek', model: 'deepseek-chat', proseFallback: true },
       })
+      expect('maxTokens' in (got.value as { config: ResolvedAdvisorConfig }).config).toBe(false)
     }
   })
 
-  it('the S1 containment fallback carries raw-pinned maxTokens/proseFallback and omits them when the raw entry lacks them', async () => {
+  it('the S1 containment fallback carries a raw-pinned proseFallback and omits it when the raw entry lacks it', async () => {
     // S1 mirrors the readable raw source's scalar latches (systemPrompt /
-    // immuneTurns / maxDeltaMessages style) — the issue-#102 keys ride the
-    // same path: present on the wire iff the raw entry pins them (the
-    // resolver never ran, so no schema default fills them here).
-    const seeded = await composeGatewayHarness({ bogus: 1, maxTokens: 4096, proseFallback: true } as Partial<AdvisorConfig>)
+    // immuneTurns / maxDeltaMessages style) — the issue-#102 key rides the
+    // same path: present on the wire iff the raw entry pins it (the
+    // resolver never ran, so no schema default fills it here).
+    const seeded = await composeGatewayHarness({ bogus: 1, proseFallback: true } as Partial<AdvisorConfig>)
     const seededGot = await seeded.connection.handler!('advisor/get', { args: {} }, new AbortController().signal, seeded.connection.peer)
     expect(seededGot.ok).toBe(true)
     if (seededGot.ok) {
       const config = (seededGot.value as { config: ResolvedAdvisorConfig }).config
       expect(config.disabledReason).toContain('unknown config key "bogus"')
-      expect(config.maxTokens).toBe(4096)
       expect(config.proseFallback).toBe(true)
     }
 
@@ -668,7 +666,6 @@ describe('typertGateway endpoint claims + payload contract', () => {
       const config = (bareGot.value as { config: ResolvedAdvisorConfig }).config
       expect(config.disabledReason).toContain('unknown config key "bogus"')
       // Absent keys are omitted, never present-as-undefined (wire boundary).
-      expect('maxTokens' in config).toBe(false)
       expect('proseFallback' in config).toBe(false)
     }
   })
@@ -797,7 +794,6 @@ describe('composed plugin (apply wires the gateway)', () => {
       systemPrompt: 'entry prompt',
       immuneTurns: 5,
       maxDeltaMessages: 60,
-      maxTokens: 768,
       proseFallback: false,
       disabledReason: expect.any(String),
     })
@@ -826,7 +822,6 @@ describe('composed plugin (apply wires the gateway)', () => {
       systemPrompt: 'entry prompt',
       immuneTurns: 5,
       maxDeltaMessages: 60,
-      maxTokens: 768,
       proseFallback: false,
     })
   })

@@ -34,10 +34,12 @@
  * resolvable from a fiber that declares it.
  *
  * The returned config is normalized to the typertGateway JSON wire boundary:
- * absent keys (provider/model/disabledReason, and maxTokens/proseFallback
- * when the raw entry omits them on the S1 containment path) are OMITTED,
+ * absent keys (provider/model/disabledReason, and proseFallback when the raw
+ * entry omits it on the S1 containment path) are OMITTED,
  * never present-as-undefined (the gateway's result validation rejects
- * undefined values).
+ * undefined values). No `maxTokens` key is carried anymore (2026-10-18
+ * ruling: the model-side budget is removed; a stored `maxTokens` line is
+ * tolerated and dropped by the resolver).
  *
  * @module dsh-advisor/gateway
  */
@@ -536,7 +538,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * disabled-with-reason carrying the message — the gateway never fails the
    * RPC on a bad config, and gate semantics hold (no model call can start).
    * S1: when the raw source is still readable, the fallback seeds its scalar
-   * latches (systemPrompt / immuneTurns / maxDeltaMessages / maxTokens /
+   * latches (systemPrompt / immuneTurns / maxDeltaMessages /
    * proseFallback / reasoningEffort) instead of hardcoded defaults, so an
    * invalid config only drops the offending keys.
    */
@@ -556,7 +558,6 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         systemPrompt: raw?.systemPrompt ?? '',
         immuneTurns: raw?.immuneTurns ?? 3,
         maxDeltaMessages: raw?.maxDeltaMessages ?? 60,
-        maxTokens: raw?.maxTokens,
         proseFallback: raw?.proseFallback,
         // The resolver never ran on this arm, so the RD-1 empty = automatic
         // normalization (config.ts) is mirrored here: a raw empty/blank value
@@ -567,18 +568,18 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     }
     // typertGateway wire boundary: absent keys are omitted, never
     // present-as-undefined (the result validator rejects undefined values).
-    // The eight persisted keys (qc1 W-1, issue #102; T2 plan
-    // dsh-advisor-reasoning-effort): maxTokens/proseFallback/reasoningEffort
+    // The seven persisted keys (qc1 W-1, issue #102; T2 plan
+    // dsh-advisor-reasoning-effort): proseFallback/reasoningEffort
     // ride the same resolved source — present whenever the resolver defined
-    // them (the schema defaults fill 768/false on the normal path), omitted
+    // them (the schema default fills false on the normal path), omitted
     // only when the raw entry lacks them and the S1 fallback cannot seed them.
+    // No maxTokens key since the 2026-10-18 ruling (budget removed).
     const wire: Record<string, unknown> = {
       enabled: config.enabled,
       systemPrompt: config.systemPrompt,
       immuneTurns: config.immuneTurns,
       maxDeltaMessages: config.maxDeltaMessages,
     }
-    if (config.maxTokens !== undefined) wire.maxTokens = config.maxTokens
     if (config.proseFallback !== undefined) wire.proseFallback = config.proseFallback
     if (config.reasoningEffort !== undefined) wire.reasoningEffort = config.reasoningEffort
     if (config.provider !== undefined) wire.provider = config.provider
