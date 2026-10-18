@@ -1344,8 +1344,8 @@ describe('thinking-effort capability (plan dsh-advisor-reasoning-effort, task 3)
     expect(state.modelReasoning[keyB]).toEqual([{ id: 'high', name: 'High' }])
   })
 
-  it('marks the capability unavailable on a tagged data error without polluting the options', async () => {
-    const { remote, rpc } = scriptedApi({ config: { ...PAIRED } }) // no reasoning record → tagged error
+  it('marks the capability unavailable on the definitive no-efforts verdict without polluting the options', async () => {
+    const { remote, rpc } = scriptedApi({ config: { ...PAIRED } }) // no reasoning record → tagged unavailable
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
     const state = store.store.getSnapshot()
@@ -1353,21 +1353,44 @@ describe('thinking-effort capability (plan dsh-advisor-reasoning-effort, task 3)
     expect(Object.hasOwn(state.modelReasoning, KEY)).toBe(false)
   })
 
-  it('marks the capability unavailable on a transport failure (ok:false) and on a throw', async () => {
-    const failing = scriptedApi({ config: { ...PAIRED }, reasoningHandler: () => failResult('capability channel down') })
-    const store = new AdvisorSettingsStore(failing.remote, failing.rpc, schema)
-    await store.load()
-    expect(store.store.getSnapshot().modelReasoningState[KEY]).toBe('unavailable')
+  it('latches nothing on a lookup failure: a -failed tag, a transport failure and a throw all leave no state entry', async () => {
+    // Only the DEFINITIVE `advisor/model-reasoning-unavailable` tag is a
+    // verdict: a failure must not render as a permanent "declares nothing" —
+    // the marker is dropped so the next ensureModelReasoning re-probes (the
+    // runtime side of this plan never caches a resolution failure either).
+    let answer: RpcResult<unknown> = okResult({
+      error: { tag: 'advisor/model-reasoning-failed', message: 'capability lookup blew up' },
+    })
+    const { remote, rpc, modelReasoning } = scriptedApi({
+      config: { ...PAIRED },
+      reasoningHandler: () => answer,
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.ensureModelReasoning('deepseek-official', 'ds-a')
+    expect(modelReasoning).toHaveBeenCalledTimes(1)
+    expect(Object.hasOwn(store.store.getSnapshot().modelReasoningState, KEY)).toBe(false)
     expect(Object.hasOwn(store.store.getSnapshot().modelReasoning, KEY)).toBe(false)
+
+    // …so the next probe runs again (nothing latched) and can now resolve.
+    answer = okResult({ efforts: [{ id: 'low', name: 'Low' }] })
+    await store.ensureModelReasoning('deepseek-official', 'ds-a')
+    expect(modelReasoning).toHaveBeenCalledTimes(2)
+    expect(store.store.getSnapshot().modelReasoningState[KEY]).toBe('ready')
+
+    const failing = scriptedApi({ config: { ...PAIRED }, reasoningHandler: () => failResult('capability channel down') })
+    const store2 = new AdvisorSettingsStore(failing.remote, failing.rpc, schema)
+    await store2.ensureModelReasoning('deepseek-official', 'ds-a')
+    expect(Object.hasOwn(store2.store.getSnapshot().modelReasoningState, KEY)).toBe(false)
+    expect(Object.hasOwn(store2.store.getSnapshot().modelReasoning, KEY)).toBe(false)
 
     const throwing = scriptedApi({
       config: { ...PAIRED },
       reasoningHandler: () => { throw new Error('capability lookup blew up') },
     })
-    const store2 = new AdvisorSettingsStore(throwing.remote, throwing.rpc, schema)
-    await store2.load()
-    expect(store2.store.getSnapshot().modelReasoningState[KEY]).toBe('unavailable')
-    expect(Object.hasOwn(store2.store.getSnapshot().modelReasoning, KEY)).toBe(false)
+    const store3 = new AdvisorSettingsStore(throwing.remote, throwing.rpc, schema)
+    await store3.ensureModelReasoning('deepseek-official', 'ds-a')
+    expect(Object.hasOwn(store3.store.getSnapshot().modelReasoningState, KEY)).toBe(false)
+    expect(Object.hasOwn(store3.store.getSnapshot().modelReasoning, KEY)).toBe(false)
   })
 
   it('load() invalidates the capability caches and refetches the stored pair', async () => {

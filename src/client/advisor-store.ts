@@ -162,7 +162,7 @@ export interface ReasoningEffortOption {
  * RETURNED data (never a thrown coded failure).
  */
 type AdvisorModelReasoningPayload =
-  | { efforts: readonly ReasoningEffortOption[]; defaultEffort?: string }
+  | { efforts: readonly ReasoningEffortOption[] }
   | { error: { tag: string; message: string } }
 
 /** Why a provider offers no model options (KD-S2 empty case → guidance copy). */
@@ -241,9 +241,12 @@ export interface AdvisorSettingsState {
   /**
    * Capability resolution state per key: 'loading' while the first fetch for
    * the key is in flight, 'ready' once the options cached, 'unavailable'
-   * when the endpoint answered with a tagged data error or the transport
-   * failed. The card renders only the auto option + the unavailable hint for
-   * 'unavailable'.
+   * when the endpoint gave the DEFINITIVE no-efforts verdict. A lookup
+   * FAILURE (tagged `advisor/model-reasoning-failed`, a transport failure or
+   * a throw) is not a verdict: it leaves NO entry here, so the next
+   * `ensureModelReasoning` re-probes instead of latching. The card renders
+   * only the auto option + the unavailable hint for 'unavailable', and the
+   * plain stored label for an entry-less key.
    */
   modelReasoningState: Readonly<Record<string, 'loading' | 'ready' | 'unavailable'>>
   /** Namespace views by ns, for the provider join. */
@@ -666,12 +669,12 @@ export class AdvisorSettingsStore {
    * capability endpoint (`advisor/modelReasoning`, plan
    * dsh-advisor-reasoning-effort), keyed by `${provider}\u0000${model}`. At
    * most one fetch per key (concurrent first resolutions share the in-flight
-   * work) and cached on success only: a tagged data error or a transport
-   * failure latches 'unavailable' (the select degrades to the auto option)
-   * without polluting the options record, until a load() invalidates the
-   * caches. A fetch started before a load() bump is stale and caches nothing
-   * (the same generation-fence shape as the catalog fetch, qc1 W-1 / qc3 S-1).
-   * No-op without a complete pair.
+   * work) and cached on success only; the endpoint's definitive no-efforts
+   * verdict latches 'unavailable' (the select degrades to the auto option)
+   * without polluting the options record. A lookup FAILURE latches nothing,
+   * so a later call re-probes. A fetch started before a load() bump is stale
+   * and caches nothing (the same generation-fence shape as the catalog fetch,
+   * qc1 W-1 / qc3 S-1). No-op without a complete pair.
    * @param provider - provider route id.
    * @param model - model id.
    * @returns nothing; the snapshot carries the outcome.
@@ -699,7 +702,10 @@ export class AdvisorSettingsStore {
 
   /**
    * One capability fetch for `key` — the promise the in-flight dedupe tracks.
-   * Never rejects: every failure arm latches 'unavailable'.
+   * Never rejects: only the DEFINITIVE no-efforts verdict latches
+   * 'unavailable'; a lookup failure (tagged `-failed`, `ok:false` transport
+   * failure, or a throw) drops the key's marker so the next
+   * `ensureModelReasoning` re-probes.
    */
   private async fetchModelReasoning(key: string, provider: string, model: string): Promise<void> {
     const generation = this.reasoningGeneration
@@ -712,20 +718,34 @@ export class AdvisorSettingsStore {
           s.modelReasoning = { ...s.modelReasoning, [key]: payload.efforts }
           s.modelReasoningState = { ...s.modelReasoningState, [key]: 'ready' }
         })
-      } else {
-        // Tagged data error ({ error }) or transport failure (ok:false): the
-        // capability stays unknown — the select renders only the auto option.
+      } else if (payload?.error.tag === 'advisor/model-reasoning-unavailable') {
+        // Definitive verdict: the model declares nothing selectable — the
+        // select degrades to the auto option for this key.
         this.store.update((s) => {
           s.modelReasoningState = { ...s.modelReasoningState, [key]: 'unavailable' }
         })
+      } else {
+        // `advisor/model-reasoning-failed` (adapter throw / deadline) or a
+        // transport failure (ok:false): NOT a verdict — a transient failure
+        // must not read as a permanent "declares nothing" (the runtime side
+        // of the same plan never caches a resolution failure either).
+        this.dropReasoningState(key)
       }
     } catch {
-      if (generation === this.reasoningGeneration) {
-        this.store.update((s) => {
-          s.modelReasoningState = { ...s.modelReasoningState, [key]: 'unavailable' }
-        })
-      }
+      if (generation === this.reasoningGeneration) this.dropReasoningState(key)
     }
+  }
+
+  /**
+   * Drop one capability marker so the key re-probes on the next
+   * `ensureModelReasoning` (its `hasOwn` early-exit keys off this record).
+   */
+  private dropReasoningState(key: string): void {
+    this.store.update((s) => {
+      const next = { ...s.modelReasoningState }
+      delete next[key]
+      s.modelReasoningState = next
+    })
   }
 
   /** Set or clear the provider ('' clears); switches invalidate the chosen model. */

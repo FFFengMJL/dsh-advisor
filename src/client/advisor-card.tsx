@@ -71,6 +71,7 @@ import type { ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ApplyFailure, AdvisorSettingsState, AdvisorSettingsStore } from './advisor-store.ts'
+import type { AdvisorKey } from './locales.ts'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from '../prompts.ts'
 import styles from './advisor-card.module.css'
 
@@ -240,6 +241,15 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
   const storedEffortUnmatched = draft.reasoningEffort !== undefined
     && !effortOptions.some(option => option.id === draft.reasoningEffort)
   const effortStale = reasoningState === 'ready' && storedEffortUnmatched
+  // The unmatched stored option's own label, chosen by capability state (R2 +
+  // the copy nit): an unsettled lookup must NOT read as "unavailable" — the
+  // value may well be declared, and `load()` clears the cache on every save —
+  // while a settled 'ready' without the id is the stale case.
+  const storedEffortLabel: AdvisorKey = reasoningState === 'unavailable'
+    ? 'reasoningEffortStored'
+    : reasoningState === 'ready'
+      ? 'reasoningEffortStoredStale'
+      : 'reasoningEffortStoredPending'
   const errorText = applyState.kind === 'error' ? failureCopy(applyState.failure, t) : undefined
   // Upstream disabled semantics (Global Constraints): save = !dirty ||
   // invalid || saving; discard = !dirty || saving. In a read-only
@@ -325,7 +335,7 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
               {storedEffortUnmatched && draft.reasoningEffort !== undefined
                 ? (
                   <option value={draft.reasoningEffort}>
-                    {t('reasoningEffortStored', { id: draft.reasoningEffort })}
+                    {t(storedEffortLabel, { id: draft.reasoningEffort })}
                   </option>
                 )
                 : null}

@@ -151,25 +151,13 @@ select.input {
   cursor: default;
 }
 
-/* The two short numeric fields (immune turns / max delta messages) sit side
-   by side, each keeping a full-width field of its own column; the group
-   closes the field run, so it carries the hairline separator itself. */
-.numberFields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
-  padding: 12px 0;
-  border-top: 0.5px solid var(--dsw-alias-border-l2);
-}
-
-.numberFields .field {
-  padding: 0;
-}
-
-/* The model / thinking-effort pair (plan dsh-advisor-reasoning-effort, RD-4):
-   the same two-column grid rules as .numberFields. The group sits mid-run
-   (the system-prompt field follows), so it carries the hairline separator
-   itself — the model field used to draw it as a direct .field child. */
+/* Side-by-side two-column groups: the two short numeric fields (immune turns
+   / max delta messages) and the model / thinking-effort pair (plan
+   dsh-advisor-reasoning-effort, RD-4). The number group closes the field run
+   and the pair group sits mid-run (the system-prompt field follows), so each
+   wrapper is not a .field and carries the hairline separator itself — the
+   model field used to draw it as a direct .field child. */
+.numberFields,
 .pairFields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -178,6 +166,7 @@ select.input {
   border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 
+.numberFields .field,
 .pairFields .field {
   padding: 0;
 }

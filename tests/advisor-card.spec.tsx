@@ -172,7 +172,8 @@ interface Scripted {
  * `config: null` = the gateway is unreachable (get fails) — the C-1/KD-G5
  * notice path. `reasoning` maps a `${provider}\u0000${model}` key to the T2
  * capability payload served for `advisor/modelReasoning` (absent key → the
- * tagged unavailable error).
+ * tagged unavailable error); `reasoningHandler` overrides that record with a
+ * custom call-through (used to hold the lookup unsettled).
  */
 function scriptedApi(options: {
   config?: AdvisorConfigView | null
@@ -181,6 +182,7 @@ function scriptedApi(options: {
   groups?: ModelCatalog['groups']
   writable?: boolean
   reasoning?: Record<string, unknown>
+  reasoningHandler?: (args: { provider: string; model: string }) => Promise<RpcResult<unknown>>
 } = {}): Scripted {
   const others = options.namespaces ?? [deepseekNs(), piAiNs()]
   const entries = options.entries ?? [DEEPSEEK, OPENAI, ZOMBIE]
@@ -208,6 +210,7 @@ function scriptedApi(options: {
     return Promise.resolve(okResult({ config: current }))
   })
   const modelReasoning = vi.fn((payload: { args: { provider: string; model: string } }) => {
+    if (options.reasoningHandler !== undefined) return options.reasoningHandler(payload.args)
     const key = `${payload.args.provider}\u0000${payload.args.model}`
     const response = options.reasoning?.[key]
       ?? { error: { tag: 'advisor/model-reasoning-unavailable', message: `test: ${key} declares no reasoning efforts` } }
@@ -1036,7 +1039,7 @@ describe('AdvisorCard thinking-effort select (plan dsh-advisor-reasoning-effort,
     const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
     expect(select.value).toBe('ultra')
     const labels = within(select).getAllByRole('option').map(option => option.textContent)
-    expect(labels).toEqual([en.reasoningEffortAuto, en.reasoningEffortStored.replace('{id}', 'ultra'), 'Low'])
+    expect(labels).toEqual([en.reasoningEffortAuto, en.reasoningEffortStoredStale.replace('{id}', 'ultra'), 'Low'])
     expect(screen.getByText(en.reasoningEffortStale)).toBeTruthy()
   })
 
@@ -1098,5 +1101,36 @@ describe('AdvisorCard thinking-effort select (plan dsh-advisor-reasoning-effort,
     expect(scripted.call).toHaveBeenCalledWith('/api', 'advisor/set', {
       args: { patch: { reasoningEffort: '' } },
     })
+  })
+
+  it('renders a stored effort as a plain option while the capability lookup is still unsettled', async () => {
+    // load() clears the capability cache and re-probes on every save, so the
+    // stored value is unmatched during that window — it must not read as
+    // "unavailable": a pending lookup says nothing about the declaration.
+    const { controller, props, view } = await mountCard({
+      config: { ...PAIRED, reasoningEffort: 'low' },
+      reasoningHandler: () => new Promise<RpcResult<unknown>>(() => {}),
+    })
+    expect(controller.store.getSnapshot().modelReasoningState[KEY]).toBe('loading')
+    view.rerender(<AdvisorCard {...props} />)
+    const select = screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement
+    expect(select.disabled).toBe(false)
+    expect(select.value).toBe('low')
+    const labels = within(select).getAllByRole('option').map(option => option.textContent)
+    expect(labels).toEqual([en.reasoningEffortAuto, en.reasoningEffortStoredPending.replace('{id}', 'low')])
+    expect(screen.getByText(en.reasoningEffortHint)).toBeTruthy()
+    expect(screen.queryByText(en.reasoningEffortUnavailable)).toBeNull()
+  })
+
+  it('disables the effort select while the card is read-only and while the pair is incomplete', async () => {
+    await mountCard({ config: { ...PAIRED }, writable: false })
+    expect((screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement).disabled).toBe(true)
+    cleanup()
+    // No model → no `${provider}\u0000${model}` capability key → nothing to
+    // select, so the select is inert (the model select is gated the same way).
+    await mountCard({
+      config: { enabled: true, provider: 'deepseek-official', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+    })
+    expect((screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement).disabled).toBe(true)
   })
 })

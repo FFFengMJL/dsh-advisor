@@ -39,9 +39,12 @@ export const en = {
   reasoningEffortUnavailable: 'Thinking-effort options are currently unavailable for the selected model — only automatic is available.',
   reasoningEffortStale: 'The stored thinking effort is not declared by the selected model. Reselect one or keep the stored value.',
   // The select's own option for a stored value the selected model does not
-  // declare (stale or capability-unavailable) — {id} interpolates the stored
-  // effort id (task-3 review R2).
+  // declare — one key per capability state, so a pending lookup never reads
+  // as "unavailable" (task-3 review R2 + the copy nit). {id} interpolates the
+  // stored effort id.
   reasoningEffortStored: 'Stored: {id} (unavailable)',
+  reasoningEffortStoredStale: 'Stored: {id} (not declared)',
+  reasoningEffortStoredPending: 'Stored: {id}',
   save: 'Save',
   saving: 'Saving…',
   discard: 'Discard',
@@ -98,6 +101,8 @@ export const zh: typeof en = {
   reasoningEffortUnavailable: '所选模型当前无法提供思考权重选项——仅可使用自动。',
   reasoningEffortStale: '存储的思考权重不在所选模型的声明列表中。请重新选择，或保留存储的值。',
   reasoningEffortStored: '已存储：{id}（所选模型不可用）',
+  reasoningEffortStoredStale: '已存储：{id}（未在声明列表中）',
+  reasoningEffortStoredPending: '已存储：{id}',
   save: '保存',
   saving: '保存中…',
   discard: '放弃修改',
