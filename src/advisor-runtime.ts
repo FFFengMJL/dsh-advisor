@@ -726,11 +726,12 @@ export class AdvisorRuntime {
     try {
       // Capability-gate `reasoningEffort` (qc2 W-1 / qc1 W-1 / qc3 F-3):
       // resolve the model's declared efforts ONCE per (provider, model) and
-      // pass 'off' only when supported; never fail the call on a resolution
-      // error (the option is simply omitted). The resolution is bounded by the
-      // call deadline (n4 QC N-5): the fused signal is threaded through, so a
-      // hung adapter capability lookup that honors cancellation aborts with
-      // the call instead of wedging the drain ahead of the deadline-guarded
+      // send the configured id when the model declares it, else the smallest
+      // declared effort; never fail the call on a resolution error (the
+      // option is simply omitted). The resolution is bounded by the call
+      // deadline (n4 QC N-5): the fused signal is threaded through, so a hung
+      // adapter capability lookup that honors cancellation aborts with the
+      // call instead of wedging the drain ahead of the deadline-guarded
       // stream loop.
       const reasoningEffort = await this.resolveReasoningEffort(deadlineSignal)
       const stream = this.llm.stream(this.buildOptions(delta, deadlineSignal, reasoningEffort))
