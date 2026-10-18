@@ -440,12 +440,14 @@ export interface SessionObserverOptions {
    */
   readonly onCompletedTurnEnd?: (sessionId: string) => void
   /**
-   * Invoked for a human-input arrival (`isHumanInputEvent`) BEFORE the mode
-   * latch (plan dsh-advisor-next-prompt-n12, T1) — the next-prompt manager
-   * bumps its generation fence and clears the stored suggestion here: the
-   * user is already typing, so any prediction made for the finished turn is
-   * stale. Fires regardless of trigger mode (both session kinds can carry
-   * human input).
+   * Invoked for a human-input arrival (`isHumanInputEvent`; plan
+   * dsh-advisor-next-prompt-n12, T1) — the next-prompt manager bumps its
+   * generation fence and clears the stored suggestion here: the user is
+   * already typing, so any prediction made for the finished turn is stale.
+   * Fires regardless of trigger mode (both session kinds can carry human
+   * input), ahead of the stepped-turn gate and the reply-complete gate
+   * either way; the mode-latch write order is irrelevant (the trigger reads
+   * no latch, and a `turn/end` is never a human input).
    */
   readonly onUserTurnStart?: (sessionId: string) => void
 }
@@ -552,8 +554,12 @@ export class SessionTranscriptObserver {
     // round (spec §4).
     if (event.type === 'turn/end') this.turnEndSessions.add(sessionId)
     // Next-prompt fence (plan dsh-advisor-next-prompt-n12, T1): a human-input
-    // arrival supersedes any prediction for the finished turn — bump + clear
-    // BEFORE the mode latch, so both session kinds observe it.
+    // arrival supersedes any prediction for the finished turn — bump + clear.
+    // Sitting after the mode-latch write above is order-equivalent: the two
+    // event shapes are mutually exclusive (a `turn/end` is never a human
+    // input) and this trigger reads no latch. The ordering that matters is
+    // firing before the reviewable-gate return below and before the
+    // reply-complete gate at the bottom, so both session kinds observe it.
     if (isHumanInputEvent(event)) this.options.onUserTurnStart?.(sessionId)
     if (isReviewableTurnEnd(event)) {
       // Stepped-turn gate: the arriving turn/end must be the latest closed turn
