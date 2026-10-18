@@ -1,0 +1,523 @@
+/**
+ * T1 (plan dsh-advisor-next-prompt-n12) — the server next-prompt runner.
+ *
+ * Contract under test (`NextPromptManager`, one instance per plugin fiber):
+ * 1. Gate — prediction calls start ONLY when `resolve().enabled` is true AND
+ *    `resolve().nextPrompt` is true; otherwise zero llm calls ever (the spy
+ *    llm proves it).
+ * 2. Arm/consume — `onCompletedTurnEnd` arms exactly one pending slot per
+ *    session; the NEXT `onDelta` for that session is the prediction context
+ *    and fires the call; a delta-less turn (no `onDelta`) cancels the pending
+ *    slot with no call.
+ * 3. Fence — per-session generation counter; `onUserTurnStart` bumps it AND
+ *    clears the stored text immediately; every new `onCompletedTurnEnd` bumps
+ *    it; a result computed for a superseded generation is discarded (text and
+ *    counters untouched).
+ * 4. Best-effort — fire-and-forget with its own dsh-timeout `deadline`; at
+ *    most ONE lightweight retry within the same generation; every failure
+ *    (throw, deadline, empty/`NONE` reply) is a silent drop with a debug log.
+ * 5. Shaping — strip surrounding quotes/backticks/code fences, collapse
+ *    whitespace runs to single spaces, reject the empty result, hard-truncate
+ *    to `NEXT_PROMPT_MAX_CHARS`; the stored text is always single-line.
+ * 6. Reads — `getSuggestion` returns `{ suggestion: null }` for a session
+ *    with no stored text; per-session state is dropped by `disposeSession` /
+ *    `disposeAll`.
+ *
+ * All cases drive the manager directly with an injected fake `llm.stream`
+ * (mock llm, fake timers for the deadline case — no live API).
+ */
+
+import { describe, expect, it, vi } from 'vitest'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { NextPromptManager } from '../src/next-prompt'
+import type { NextPromptManagerOptions } from '../src/next-prompt'
+import type { AdvisorLlm } from '../src/advisor-runtime'
+import type { Delta } from '../src/transcript'
+import type { ResolvedAdvisorConfig } from '../src/config'
+import { DEFAULT_NEXT_PROMPT_SYSTEM_PROMPT } from '../src/prompts'
+
+// ---------------------------------------------------------------------------
+// Shared fixtures
+// ---------------------------------------------------------------------------
+
+/** A rendered transcript delta (shape produced by the T3 observer). */
+const delta = (markdown: string): Delta => ({ markdown, willContinue: false })
+
+/** A fully enabled resolved config (post-gate) with predictions on. */
+const baseConfig = (): ResolvedAdvisorConfig => ({
+  enabled: true,
+  provider: 'test-provider',
+  model: 'test-model',
+  systemPrompt: '',
+  immuneTurns: 3,
+  maxDeltaMessages: 60,
+  nextPrompt: true,
+})
+
+/** Chunk script for a successful text reply. */
+const textReply = (text: string): readonly StreamChunk[] => [
+  { type: 'text-delta', index: 0, text },
+  { type: 'finish', reason: { kind: 'stop' } },
+]
+
+/** Chunk script for an empty reply — terminal finish, no text deltas. */
+const emptyReply = (): readonly StreamChunk[] => [{ type: 'finish', reason: { kind: 'stop' } }]
+
+type Reply =
+  | { readonly chunks: readonly StreamChunk[] }
+  | { readonly throw: Error }
+  | { readonly hang: true }
+
+/** Scripted fake llm: records calls, replays responses (advisor-runtime pattern). */
+class FakeLlm implements AdvisorLlm {
+  readonly calls: GenerateOptions[] = []
+
+  constructor(private readonly responses: readonly Reply[]) {}
+
+  stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.calls.push(options)
+    const response = this.responses[this.calls.length - 1]
+    if (response === undefined) {
+      throw new Error(`FakeLlm: unexpected stream call #${this.calls.length} (script exhausted)`)
+    }
+    if ('throw' in response) throw response.throw
+    if ('hang' in response) {
+      return (async function* () {
+        await new Promise<void>(() => {})
+      })()
+    }
+    return (async function* () {
+      yield* response.chunks
+    })()
+  }
+}
+
+/**
+ * Gated fake llm: the FIRST stream call blocks until `open()`, then replays
+ * the reply — used to hold a prediction in flight across a fence bump.
+ */
+class GatedLlm implements AdvisorLlm {
+  readonly calls: GenerateOptions[] = []
+  private readonly chunks: readonly StreamChunk[]
+  private opener?: (chunks: readonly StreamChunk[]) => void
+  private readonly openPromise: Promise<readonly StreamChunk[]>
+
+  constructor(chunks: readonly StreamChunk[]) {
+    this.chunks = chunks
+    this.openPromise = new Promise((resolve) => {
+      this.opener = resolve
+    })
+  }
+
+  stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.calls.push(options)
+    return (async function* (self: GatedLlm) {
+      yield* await self.openPromise
+    })(this)
+  }
+
+  open(): void {
+    this.opener?.(this.chunks)
+  }
+}
+
+/**
+ * Build one manager over a fake llm. `resolve` is a function so gate-flip
+ * tests can repoint the live config between the arm and the delta.
+ */
+function makeManager(
+  llm: AdvisorLlm,
+  resolve: () => ResolvedAdvisorConfig = () => baseConfig(),
+  overrides: Partial<NextPromptManagerOptions> = {},
+): { manager: NextPromptManager; logger: { debug: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> } } {
+  const logger = { debug: vi.fn(), warn: vi.fn() }
+  const manager = new NextPromptManager({
+    resolve,
+    llm: () => llm,
+    logger,
+    callTimeoutMs: 20,
+    ...overrides,
+  })
+  return { manager, logger }
+}
+
+/** Flush the fire-and-forget prediction chain (microtasks + one macrotask). */
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 8; i++) await Promise.resolve()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+// ---------------------------------------------------------------------------
+// Contract 1 — gate
+// ---------------------------------------------------------------------------
+
+describe('gate (contract 1)', () => {
+  it('makes zero llm calls when the advisor is disabled (S4 gate)', async () => {
+    const llm = new FakeLlm([])
+    const { manager } = makeManager(llm, () => ({ ...baseConfig(), enabled: false }))
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('### Session update\n\n**agent**: fixed the parser'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(0)
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+  })
+
+  it('makes zero llm calls when nextPrompt is off', async () => {
+    const llm = new FakeLlm([])
+    const { manager } = makeManager(llm, () => ({ ...baseConfig(), nextPrompt: false }))
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('### Session update\n\n**agent**: fixed the parser'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(0)
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+  })
+
+  it('keeps zero calls when the gate flips on between the arm and the delta', async () => {
+    // Arming under a closed gate must not leave a slot that a later config
+    // flip (volatile live edit) could fire: zero llm calls ever.
+    const llm = new FakeLlm([])
+    const configRef = { current: { ...baseConfig(), nextPrompt: false } }
+    const { manager } = makeManager(llm, () => configRef.current)
+
+    manager.onCompletedTurnEnd('s')
+    configRef.current = baseConfig() // nextPrompt on before the delta arrives
+    manager.onDelta('s', delta('### Session update\n\n**agent**: fixed the parser'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(0)
+  })
+
+  it('fires exactly one prediction call with the prediction system prompt when enabled and on', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('write a regression test') }])
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('### Session update\n\n**agent**: fixed the parser'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(1)
+    const options = llm.calls[0]!
+    expect(options).toMatchObject({
+      provider: 'test-provider',
+      model: 'test-model',
+      system: DEFAULT_NEXT_PROMPT_SYSTEM_PROMPT,
+    })
+    // An ordinary conversation request — the purpose marker stays unset.
+    expect(options.purpose).toBeUndefined()
+    expect(options.messages).toHaveLength(1)
+    const message = options.messages[0]!
+    expect(message.role).toBe('user')
+    expect(message.content[0]).toEqual({
+      type: 'text',
+      text: '### Session update\n\n**agent**: fixed the parser',
+    })
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: 'write a regression test' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Contract 2 — arm/consume
+// ---------------------------------------------------------------------------
+
+describe('arm/consume (contract 2)', () => {
+  it('uses each next delta as the prediction context, one call per completed turn', async () => {
+    const llm = new FakeLlm([
+      { chunks: textReply('first next step') },
+      { chunks: textReply('second next step') },
+    ])
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn one update'))
+    await settle()
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn two update'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(2)
+    const textOf = (options: GenerateOptions): string => {
+      const block = options.messages[0]!.content[0]!
+      return block.type === 'text' ? block.text : ''
+    }
+    expect(textOf(llm.calls[0]!)).toBe('turn one update')
+    expect(textOf(llm.calls[1]!)).toBe('turn two update')
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: 'second next step' })
+  })
+
+  it('arms exactly ONE pending slot: a second arm before the delta yields a single call', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('one suggestion') }])
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onCompletedTurnEnd('s') // re-arms the SAME slot — never two
+    manager.onDelta('s', delta('turn update'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(1)
+  })
+
+  it('a delta-less turn cancels the pending slot with no call', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('later suggestion') }])
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    await settle() // no onDelta ever follows this turn — nothing may fire
+    expect(llm.calls).toHaveLength(0)
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+
+    // The next completed turn re-arms cleanly and predicts exactly once.
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('next turn update'))
+    await settle()
+    expect(llm.calls).toHaveLength(1)
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: 'later suggestion' })
+  })
+
+  it('an armed slot is consumed exactly once: extra deltas do not fire', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('single shot') }])
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('the delta'))
+    await settle()
+    manager.onDelta('s', delta('an unannounced extra delta'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Contract 3 — fence
+// ---------------------------------------------------------------------------
+
+describe('fence (contract 3)', () => {
+  it('onUserTurnStart clears the stored suggestion immediately', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('stale suggestion') }])
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn update'))
+    await settle()
+    expect(manager.getSuggestion('s').suggestion).toBe('stale suggestion')
+
+    manager.onUserTurnStart('s')
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+  })
+
+  it('a result computed for a superseded generation is discarded (completed-turn bump)', async () => {
+    const llm = new GatedLlm(textReply('stale idea'))
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn one'))
+    // The prediction is in flight (gated) when the next completed turn bumps
+    // the generation and re-arms.
+    manager.onCompletedTurnEnd('s')
+    llm.open()
+    await settle()
+
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+    expect(llm.calls).toHaveLength(1)
+
+    // The fence must not wedge anything: the re-armed slot still predicts.
+    manager.onDelta('s', delta('turn two'))
+    await settle()
+    expect(llm.calls).toHaveLength(2)
+    expect(manager.getSuggestion('s').suggestion).toBe('stale idea')
+  })
+
+  it('a prediction in flight when the user starts typing is discarded', async () => {
+    const llm = new GatedLlm(textReply('late idea'))
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn update'))
+    manager.onUserTurnStart('s') // bumps the generation and clears immediately
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+
+    llm.open()
+    await settle()
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+    expect(llm.calls).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Contract 4 — best-effort
+// ---------------------------------------------------------------------------
+
+describe('best-effort (contract 4)', () => {
+  it('retries once after a transport throw and stores the retry result', async () => {
+    const llm = new FakeLlm([
+      { throw: new Error('provider down') },
+      { chunks: textReply('retry worked') },
+    ])
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn update'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(2)
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: 'retry worked' })
+  })
+
+  it('drops silently after the retry also throws (debug log, never warn)', async () => {
+    const llm = new FakeLlm([
+      { throw: new Error('provider down') },
+      { throw: new Error('still down') },
+    ])
+    const { manager, logger } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn update'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(2) // the initial try + the ONE retry
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+    expect(logger.debug).toHaveBeenCalled()
+    expect(logger.warn).not.toHaveBeenCalled()
+  })
+
+  it('times out a hung stream per attempt and drops silently (deadline)', async () => {
+    vi.useFakeTimers()
+    try {
+      const llm = new FakeLlm([{ hang: true }, { hang: true }])
+      const { manager, logger } = makeManager(llm, () => baseConfig(), { callTimeoutMs: 20 })
+
+      manager.onCompletedTurnEnd('s')
+      manager.onDelta('s', delta('turn update'))
+      await vi.advanceTimersByTimeAsync(100)
+
+      expect(llm.calls).toHaveLength(2) // both attempts hit the 20ms deadline
+      expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+      expect(logger.debug).toHaveBeenCalled()
+      expect(logger.warn).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops an empty reply silently (after the one retry)', async () => {
+    const llm = new FakeLlm([{ chunks: emptyReply() }, { chunks: emptyReply() }])
+    const { manager, logger } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn update'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(2)
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+    expect(logger.debug).toHaveBeenCalled()
+  })
+
+  it('drops a NONE reply silently (after the one retry)', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('NONE') }, { chunks: textReply('NONE') }])
+    const { manager, logger } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn update'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(2)
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+    expect(logger.debug).toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Contract 5 — shaping
+// ---------------------------------------------------------------------------
+
+describe('shaping (contract 5)', () => {
+  const shapingCases: ReadonlyArray<readonly [raw: string, expected: string | null]> = [
+    ['  fix   the\n\nlogin  bug  ', 'fix the login bug'],
+    ['"review the diff"', 'review the diff'],
+    ["'review the diff'", 'review the diff'],
+    ['`review the diff`', 'review the diff'],
+    ['```\nreview the diff\n```', 'review the diff'],
+    ['```ts\nrun the type check\n```', 'run the type check'],
+    ['NONE', null],
+    ['   ', null],
+    ['', null],
+    ['a'.repeat(130), 'a'.repeat(120)],
+  ]
+
+  it.each(shapingCases)('stores the shaped single-line suggestion for %j', async (raw, expected) => {
+    const llm = new FakeLlm([{ chunks: textReply(raw) }])
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('### Session update\n\n**agent**: did work'))
+    await settle()
+
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: expected })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Contract 6 — reads and disposal
+// ---------------------------------------------------------------------------
+
+describe('reads and disposal (contract 6)', () => {
+  it('returns { suggestion: null } for a session with no stored text', () => {
+    const { manager } = makeManager(new FakeLlm([]))
+    expect(manager.getSuggestion('unknown-session')).toEqual({ suggestion: null })
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+  })
+
+  it('disposeSession drops the per-session state', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('a suggestion') }])
+    const { manager } = makeManager(llm)
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn update'))
+    await settle()
+    expect(manager.getSuggestion('s').suggestion).toBe('a suggestion')
+
+    manager.disposeSession('s')
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+  })
+
+  it('disposeAll drops every session', async () => {
+    const llm = new FakeLlm([
+      { chunks: textReply('for one') },
+      { chunks: textReply('for two') },
+    ])
+    const { manager } = makeManager(llm)
+    manager.onCompletedTurnEnd('one')
+    manager.onDelta('one', delta('turn update'))
+    manager.onCompletedTurnEnd('two')
+    manager.onDelta('two', delta('turn update'))
+    await settle()
+    expect(manager.getSuggestion('one').suggestion).toBe('for one')
+    expect(manager.getSuggestion('two').suggestion).toBe('for two')
+
+    manager.disposeAll()
+    expect(manager.getSuggestion('one')).toEqual({ suggestion: null })
+    expect(manager.getSuggestion('two')).toEqual({ suggestion: null })
+  })
+
+  it('a disposed session can predict again — state is rebuilt, not disabled', async () => {
+    const llm = new FakeLlm([
+      { chunks: textReply('first suggestion') },
+      { chunks: textReply('second suggestion') },
+    ])
+    const { manager } = makeManager(llm)
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('turn update'))
+    await settle()
+
+    manager.disposeSession('s')
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('next turn'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(2)
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: 'second suggestion' })
+  })
+})

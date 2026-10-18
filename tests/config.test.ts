@@ -47,6 +47,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       immuneTurns: 3,
       maxDeltaMessages: 60,
       proseFallback: false,
+      nextPrompt: true,
     })
   })
 
@@ -65,6 +66,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       immuneTurns: 5,
       maxDeltaMessages: 10,
       proseFallback: true,
+      nextPrompt: true,
     })
   })
 
@@ -166,6 +168,7 @@ describe('explicit model gate (S4 / spec §5.2)', () => {
       immuneTurns: 5,
       maxDeltaMessages: 0,
       proseFallback: true,
+      nextPrompt: true,
     })
   })
 })
@@ -204,6 +207,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       immuneTurns: 3,
       maxDeltaMessages: 60,
       proseFallback: false,
+      nextPrompt: true,
     })
   })
 
@@ -221,6 +225,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       immuneTurns: 3,
       maxDeltaMessages: 60,
       proseFallback: false,
+      nextPrompt: true,
     })
   })
 
@@ -263,6 +268,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       maxDeltaMessages: 10,
       proseFallback: true,
       reasoningEffort: 'high',
+      nextPrompt: true,
     })
   })
 
@@ -350,6 +356,42 @@ describe('reasoningEffort key (plan dsh-advisor-reasoning-effort, T1)', () => {
     expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', reasoningEfforts: 'high' }))
       .toThrow(/unknown config key "reasoningEfforts"/)
     expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', reasoningEffort: 3 as never }))
+      .toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Next-prompt key — nextPrompt (plan dsh-advisor-next-prompt-n12, T1)
+// ---------------------------------------------------------------------------
+
+describe('nextPrompt key (plan dsh-advisor-next-prompt-n12, T1)', () => {
+  it('defaults to true (the schema default fills it on the Loader path)', () => {
+    const unwrapped = unwrapAdvisorConfig(Config({}))
+    expect(unwrapped.nextPrompt).toBe(true)
+    // Volatile like every other live field: the Loader commits edits into the
+    // running fiber's `{ get() }` reference — the no-remount edit channel the
+    // runtime unwrap depends on.
+    const resolved: Record<string, unknown> = Config({})
+    expect(typeof (resolved.nextPrompt as { get?: unknown }).get).toBe('function')
+    // The resolver (the runtime's SSOT read) carries the default too.
+    expect(resolveAdvisorConfig({ provider: 'p', model: 'm' }).nextPrompt).toBe(true)
+  })
+
+  it('round-trips a configured false through the schema and the resolver (get/resolve)', () => {
+    expect(unwrapAdvisorConfig(Config({ nextPrompt: false })).nextPrompt).toBe(false)
+    const resolved = resolveAdvisorConfig({ provider: 'p', model: 'm', nextPrompt: false })
+    expect(resolved.enabled).toBe(true)
+    expect(resolved.nextPrompt).toBe(false)
+    // Null input behaves like absent — the default (true) fills it.
+    expect(unwrapAdvisorConfig(Config({ nextPrompt: null })).nextPrompt).toBe(true)
+  })
+
+  it('keeps unknown-key rejection strict with the new key in CONFIG_KEYS (near-miss + wrong type stay rejects)', () => {
+    // A typo'd near-miss must not slip through just because `nextPrompt` is
+    // now legal (spec §5.2 strict schema unchanged).
+    expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', nextPrompts: true }))
+      .toThrow(/unknown config key "nextPrompts"/)
+    expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', nextPrompt: 'yes' as never }))
       .toThrow()
   })
 })

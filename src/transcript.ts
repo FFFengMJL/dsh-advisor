@@ -431,6 +431,23 @@ export interface SessionObserverOptions {
    * outside a turn/end.
    */
   readonly onRewrite?: (sessionId: string) => void
+  /**
+   * Invoked beside `onSteppedTurnEnd` for a stepped `turn/end` whose reason
+   * is exactly `completed` (plan dsh-advisor-next-prompt-n12, T1) — the
+   * next-prompt manager arms its per-session prediction slot here. Cut-short
+   * turns (`max-tokens`/`error`) do not arm: nothing was completed to
+   * predict after.
+   */
+  readonly onCompletedTurnEnd?: (sessionId: string) => void
+  /**
+   * Invoked for a human-input arrival (`isHumanInputEvent`) BEFORE the mode
+   * latch (plan dsh-advisor-next-prompt-n12, T1) — the next-prompt manager
+   * bumps its generation fence and clears the stored suggestion here: the
+   * user is already typing, so any prediction made for the finished turn is
+   * stale. Fires regardless of trigger mode (both session kinds can carry
+   * human input).
+   */
+  readonly onUserTurnStart?: (sessionId: string) => void
 }
 
 /** `turn/end` reasons the advisor reviews (spec §4 — skip cut-short turns). */
@@ -534,6 +551,10 @@ export class SessionTranscriptObserver {
     // still latches, so the new gate never supplementarily reviews a cut-short
     // round (spec §4).
     if (event.type === 'turn/end') this.turnEndSessions.add(sessionId)
+    // Next-prompt fence (plan dsh-advisor-next-prompt-n12, T1): a human-input
+    // arrival supersedes any prediction for the finished turn — bump + clear
+    // BEFORE the mode latch, so both session kinds observe it.
+    if (isHumanInputEvent(event)) this.options.onUserTurnStart?.(sessionId)
     if (isReviewableTurnEnd(event)) {
       // Stepped-turn gate: the arriving turn/end must be the latest closed turn
       // that entered at least one model step (dsh semantics — no-step turns from
@@ -544,6 +565,13 @@ export class SessionTranscriptObserver {
       // these to decrement its immuneTurns cooldown. Fires before the render so
       // the note produced by this very turn routes with the decremented value.
       this.options.onSteppedTurnEnd?.(sessionId)
+      // Next-prompt arm (plan dsh-advisor-next-prompt-n12, T1): only a
+      // `completed` turn is worth predicting after — beside the delivery
+      // countdown, before the render. The `event.type` check narrows the
+      // event data for the reason read (`isReviewableTurnEnd` already held).
+      if (event.type === 'turn/end' && event.data.reason.kind === 'completed') {
+        this.options.onCompletedTurnEnd?.(sessionId)
+      }
       const delta = this.rendererFor(sessionId).update(events)
       if (delta !== undefined) this.options.onDelta(sessionId, delta)
       return

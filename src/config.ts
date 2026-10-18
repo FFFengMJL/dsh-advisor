@@ -3,16 +3,16 @@
  *
  * The exported schemastery `Config` schema is what the cordis Loader uses to
  * validate the plugin row config: it applies defaults (`immuneTurns` 3,
- * `maxDeltaMessages` 60, `systemPrompt` "", `proseFallback` false) and
- * enforces types/bounds (integers ≥ 0). `reasoningEffort` has NO default —
- * an absent value means
+ * `maxDeltaMessages` 60, `systemPrompt` "", `proseFallback` false,
+ * `nextPrompt` true) and enforces types/bounds (integers ≥ 0).
+ * `reasoningEffort` has NO default — an absent value means
  * "automatic" (the smallest effort the resolved model declares), which no
  * concrete default can express. There is NO `maxTokens` key (2026-10-18
  * user ruling, superseding KD-I1: on OpenAI-compatible APIs `max_tokens`
  * caps reasoning + content together, so with thinking models the budget
  * intermittently starved the final content — the advisor call now sends no
  * `maxTokens` at all and output is bounded at extraction by
- * `ADVISOR_NOTE_MAX_CHARS`). All seven live fields are declared
+ * `ADVISOR_NOTE_MAX_CHARS`). All eight live fields are declared
  * `.volatile()`:
  * the Loader commits edits to them into the running fiber's references WITHOUT
  * a remount (dsh 0.1.7-rc.1 — the settings.yaml user layer is gone), so
@@ -75,6 +75,21 @@ export interface AdvisorConfig {
    * ({@link unwrapAdvisorConfig}) so "empty" and "absent" cannot diverge.
    */
   readonly reasoningEffort?: string
+  /**
+   * Next-prompt prediction switch (plan dsh-advisor-next-prompt-n12, T1):
+   * when true (the schema default), the advisor predicts the user's likely
+   * next prompt after each completed primary turn and stores it for the web
+   * surface (T2 serves it). Optional in the raw contract like
+   * {@link AdvisorConfig.proseFallback}: the schema default (true) fills it
+   * on the Loader path and plain-object entries may omit it — the resolver
+   * normalizes an absent key to true. NOT in LEGACY_KEYS — a NEW key with no
+   * stored-profile history, so no stored row can carry it (the config-key
+   * checklist seam 6 disposition). NOT in the runtime signature
+   * (`index.ts` `runtimeSignature`) — a `nextPrompt`-only edit must NOT
+   * rebuild review runtimes: the prediction gate reads it live per arm/fire,
+   * and no review-call construction constant depends on it.
+   */
+  readonly nextPrompt?: boolean
 }
 
 /** Config after the explicit model gate (spec §5.2) — consumed by T4/T6. */
@@ -98,6 +113,11 @@ export interface ResolvedAdvisorConfig {
    * option when the model declares no reasoning metadata.
    */
   readonly reasoningEffort?: string
+  /**
+   * Next-prompt prediction switch (plan dsh-advisor-next-prompt-n12, T1);
+   * the schema default (true) fills it on every resolver path.
+   */
+  readonly nextPrompt: boolean
   /** Present iff the advisor is disabled by the explicit model gate. */
   readonly disabledReason?: string
 }
@@ -116,6 +136,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'maxDeltaMessages',
   'proseFallback',
   'reasoningEffort',
+  'nextPrompt',
 ])
 
 /**
@@ -175,6 +196,13 @@ export const Config = z.object({
   // No default (RD-1): an absent value means automatic, and schemastery's
   // `default()` would persist a concrete effort as the "unconfigured" value.
   reasoningEffort: z.string().volatile(),
+  // Next-prompt prediction switch (plan dsh-advisor-next-prompt-n12, T1).
+  // Config-key checklist dispositions (seam 6): NOT in LEGACY_KEYS — a NEW
+  // key with no stored-profile history, so no stored row can carry it and
+  // strict rejection has no migration surface to tolerate; NOT in the
+  // runtime signature (`index.ts`) — a `nextPrompt`-only edit must not
+  // rebuild review runtimes (the prediction gate reads it live).
+  nextPrompt: z.boolean().default(true).volatile(),
 })
 
 function isNonEmptyString(value: string | undefined): value is string {
@@ -203,6 +231,8 @@ export interface VolatileAdvisorConfig {
   readonly proseFallback?: unknown
   /** Optional like {@link AdvisorConfig.reasoningEffort}: plain entries may omit it; the Loader path always carries it. */
   readonly reasoningEffort?: unknown
+  /** The schema default (true) fills it on the Loader path; plain entries may omit it. */
+  readonly nextPrompt?: unknown
 }
 
 /**
@@ -254,7 +284,7 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
   // The raw side is loose on purpose: the schema-removed `enabled` and
   // `maxTokens` are not VolatileAdvisorConfig members but can arrive on any
   // plain entry — the cast widens only to let the destructure strip them.
-  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, proseFallback, reasoningEffort, maxTokens, ...rest } =
+  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, proseFallback, reasoningEffort, nextPrompt, maxTokens, ...rest } =
     raw as VolatileAdvisorConfig & { readonly enabled?: unknown; readonly maxTokens?: unknown }
   return {
     ...rest,
@@ -265,6 +295,7 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
     maxDeltaMessages: unwrapReference<number>(maxDeltaMessages),
     proseFallback: unwrapReference<boolean | undefined>(proseFallback),
     reasoningEffort: normalizeReasoningEffort(unwrapReference<unknown>(reasoningEffort)),
+    nextPrompt: unwrapReference<boolean>(nextPrompt),
   }
 }
 
@@ -301,9 +332,12 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
   const missing: string[] = []
   if (!isNonEmptyString(normalized.provider)) missing.push('provider')
   if (!isNonEmptyString(normalized.model)) missing.push('model')
-  if (missing.length === 0) return { ...normalized, enabled: true }
+  if (missing.length === 0) return { ...normalized, enabled: true, nextPrompt: normalized.nextPrompt ?? true }
   const disabledReason = missing.length === 2
     ? 'provider and model are missing — configure both to enable the advisor'
     : `${missing[0]} is missing or empty — configure provider and model`
-  return { ...normalized, enabled: false, disabledReason }
+  // nextPrompt normalizes like the gate reads it (T1): an absent raw key
+  // (plain-object entries) means the schema default — never undefined on the
+  // resolved contract, which types it as a plain boolean.
+  return { ...normalized, enabled: false, nextPrompt: normalized.nextPrompt ?? true, disabledReason }
 }

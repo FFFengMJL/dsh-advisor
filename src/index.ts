@@ -67,6 +67,7 @@ import { AdvisorRuntime } from './advisor-runtime.js'
 import type { AdviceNote } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
+import { NextPromptManager } from './next-prompt.js'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { AdvisorSessionOverrides, registerAdvisorCommands, summarizeSystemPrompt, ADVISOR_MODEL_VALIDATION_TIMEOUT_MS } from './commands.js'
 import type {
@@ -270,6 +271,10 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       systemPrompt: raw?.systemPrompt ?? '',
       immuneTurns: raw?.immuneTurns ?? 3,
       maxDeltaMessages: raw?.maxDeltaMessages ?? 60,
+      // T1 (plan dsh-advisor-next-prompt-n12): the resolved contract types
+      // nextPrompt as a plain boolean — an absent raw key means the schema
+      // default (true; enabled:false already blocks every prediction call).
+      nextPrompt: raw?.nextPrompt ?? true,
       disabledReason: reason,
     }
   }
@@ -359,6 +364,17 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   })
 
   const runtimes = new Map<string, AdvisorRuntime>()
+  // Next-prompt predictor (plan dsh-advisor-next-prompt-n12, T1): one per
+  // fiber, next to the runtimes map. The gate re-reads the resolver SSOT on
+  // every arm/fire (safeResolved — the throwing resolver must not break the
+  // event hot path, qc2 W-1), the llm seam is the same app-root service the
+  // review calls use, and the prediction chain is fully decoupled from the
+  // review runtimes (no shared state; a failing prediction drops silently).
+  const suggestions = new NextPromptManager({
+    resolve: () => safeResolved(),
+    llm: () => appRootLlm(),
+    logger: ctx.logger('advisor'),
+  })
   /**
    * Runtime-affecting signature per session — the values that pin one
    * {@link AdvisorRuntime}: the effective switch, the post-gate enable (S4),
@@ -391,6 +407,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       effective.systemPrompt,
       globalResolved.proseFallback ?? false,
       globalResolved.reasoningEffort ?? '',
+      // `nextPrompt` is deliberately ABSENT (plan dsh-advisor-next-prompt-n12,
+      // T1 — config-key checklist seam 6): a `nextPrompt`-only edit must not
+      // rebuild review runtimes. The prediction gate reads it live on every
+      // arm/fire, and it touches no review-call construction constant. It is
+      // likewise NOT in LEGACY_KEYS (a new key, no stored-profile history).
     ].join('\u0000')
   }
   /**
@@ -492,6 +513,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     delete (globalThis as Record<string, unknown>)[REVIEWER_KEY]
     validationTeardown.abort('advisor owner disposed')
     overrides.disposeAll()
+    suggestions.disposeAll()
   }, 'advisor: release reviewer claim')
   const observer = new SessionTranscriptObserver({
     maxDeltaMessages: resolved().maxDeltaMessages,
@@ -509,12 +531,27 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       delivery.reset(sessionId)
       runtimes.get(sessionId)?.resetGuard()
     },
+    onCompletedTurnEnd: (sessionId: string) => {
+      // One completed primary turn — arm the next-prompt slot (plan
+      // dsh-advisor-next-prompt-n12, T1). Gated inside the manager (resolver
+      // SSOT); a closed gate arms nothing.
+      suggestions.onCompletedTurnEnd(sessionId)
+    },
+    onUserTurnStart: (sessionId: string) => {
+      // The user started typing — the fence supersedes any in-flight
+      // prediction and clears the stored suggestion immediately (plan
+      // dsh-advisor-next-prompt-n12, T1).
+      suggestions.onUserTurnStart(sessionId)
+    },
     onDelta: (sessionId: string, delta: Delta) => {
       // Lazy creation fallback covers agents that existed before this plugin
       // loaded (their `agent/created` was never observed); `agent/created`
       // below creates eagerly for the common path. The runtime gate drops the
       // delta for sessions that are disabled or S4-gate-blocked (T7).
       ensureRuntime(sessionId)?.enqueue(delta)
+      // The same delta is the next-prompt prediction context (T1). Ordering
+      // vs the review enqueue is free; the review enqueue stays first.
+      suggestions.onDelta(sessionId, delta)
     },
   })
 
@@ -573,12 +610,14 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     disposeRuntime(agent.id)
     delivery.unregisterAgent(agent.id)
     overrides.clear(agent.id)
+    suggestions.disposeSession(agent.id)
   }, { global: true })
   ctx.on('session/disposed', (session: Session) => {
     observer.disposeSession(session.id)
     disposeRuntime(session.id)
     delivery.unregisterAgent(session.id)
     overrides.clear(session.id)
+    suggestions.disposeSession(session.id)
   }, { global: true })
 
   // T1-settings live re-apply: construction-time latches (immuneTurns on the

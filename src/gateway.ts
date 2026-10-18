@@ -563,6 +563,10 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         // normalization (config.ts) is mirrored here: a raw empty/blank value
         // must not surface as a present-as-empty key.
         reasoningEffort: raw?.reasoningEffort?.trim() || undefined,
+        // T1 (plan dsh-advisor-next-prompt-n12): the resolved contract types
+        // nextPrompt as a plain boolean — an absent raw key means the schema
+        // default (true; enabled:false already blocks every prediction call).
+        nextPrompt: raw?.nextPrompt ?? true,
         disabledReason: error instanceof Error ? error.message : String(error),
       }
     }
@@ -582,6 +586,10 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     }
     if (config.proseFallback !== undefined) wire.proseFallback = config.proseFallback
     if (config.reasoningEffort !== undefined) wire.reasoningEffort = config.reasoningEffort
+    // T1 (plan dsh-advisor-next-prompt-n12): a derived switch, not a persisted
+    // key — the resolver normalizes nextPrompt to a plain boolean (the schema
+    // default fills true), so it rides every resolved get without a gate.
+    wire.nextPrompt = config.nextPrompt
     if (config.provider !== undefined) wire.provider = config.provider
     if (config.model !== undefined) wire.model = config.model
     if (config.disabledReason !== undefined) wire.disabledReason = config.disabledReason

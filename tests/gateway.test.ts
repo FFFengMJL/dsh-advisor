@@ -145,6 +145,7 @@ describe('no settings service (entry fallback)', () => {
         immuneTurns: 5,
         maxDeltaMessages: 60,
         proseFallback: false,
+        nextPrompt: true,
       },
     })
   })
@@ -189,8 +190,8 @@ describe('with a settings service (set writes the entry config)', () => {
 
     // The write rode the settings channel keyed by the ENTRY id.
     // The full-config fixture mirrors the RESOLVER's output shape — the
-    // schema default fills proseFallback (issue #102); maxTokens is gone
-    // (2026-10-18 ruling).
+    // schema default fills proseFallback (issue #102) and nextPrompt (plan
+    // dsh-advisor-next-prompt-n12); maxTokens is gone (2026-10-18 ruling).
     const composed: ResolvedAdvisorConfig = {
       enabled: true,
       provider: 'deepseek',
@@ -199,6 +200,7 @@ describe('with a settings service (set writes the entry config)', () => {
       immuneTurns: 5,
       maxDeltaMessages: 60,
       proseFallback: false,
+      nextPrompt: true,
     }
     // Live: the bridge source the runtime reads reflects the write.
     expect(resolveAdvisorConfig(bridge.source())).toEqual(composed)
@@ -235,6 +237,7 @@ describe('with a settings service (set writes the entry config)', () => {
         immuneTurns: 3,
         maxDeltaMessages: 10,
         proseFallback: false,
+        nextPrompt: true,
         disabledReason: expect.any(String),
       },
     })
@@ -262,6 +265,7 @@ describe('with a settings service (set writes the entry config)', () => {
         immuneTurns: 3,
         maxDeltaMessages: 10,
         proseFallback: false,
+        nextPrompt: true,
       },
     })
   })
@@ -301,6 +305,7 @@ describe('with a settings service (set writes the entry config)', () => {
       immuneTurns: 3,
       maxDeltaMessages: 60,
       proseFallback: false,
+      nextPrompt: true,
     })
   })
 
@@ -528,6 +533,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
           immuneTurns: 5,
           maxDeltaMessages: 60,
           proseFallback: false,
+          nextPrompt: true,
           disabledReason: expect.any(String),
         },
       },
@@ -795,6 +801,7 @@ describe('composed plugin (apply wires the gateway)', () => {
       immuneTurns: 5,
       maxDeltaMessages: 60,
       proseFallback: false,
+      nextPrompt: true,
       disabledReason: expect.any(String),
     })
 
@@ -823,6 +830,7 @@ describe('composed plugin (apply wires the gateway)', () => {
       immuneTurns: 5,
       maxDeltaMessages: 60,
       proseFallback: false,
+      nextPrompt: true,
     })
   })
 
