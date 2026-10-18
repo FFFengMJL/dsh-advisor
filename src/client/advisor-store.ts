@@ -110,6 +110,13 @@ export interface AdvisorConfigView {
    * entries → the runtime default false, mirroring src/config.ts.
    */
   proseFallback?: boolean
+  /**
+   * Thinking-effort override (plan dsh-advisor-reasoning-effort, T1/T2);
+   * absent = automatic — the runtime sends the smallest declared effort.
+   * The wire omits the key while unset (host readConfig never emits
+   * present-as-undefined).
+   */
+  reasoningEffort?: string
   /** Present iff the advisor is disabled by the explicit model gate. */
   disabledReason?: string
 }
@@ -135,6 +142,29 @@ export interface ModelOption {
   description?: string
 }
 
+/**
+ * One thinking-effort option the T2 capability endpoint declares for a
+ * `${provider}\u0000${model}` key (client mirror of the gateway wire shape —
+ * the store never value-imports the node-side module).
+ */
+export interface ReasoningEffortOption {
+  /** Effort id written to the host config ('low' | 'high' | 'off' | adapter-specific). */
+  id: string
+  /** Human-readable label; the card falls back to the id when it is empty. */
+  name: string
+  /** Optional adapter-supplied description. */
+  description?: string
+}
+
+/**
+ * The wire payload of `/api/advisor/modelReasoning` (src/gateway.ts, T2):
+ * the declared efforts on success, or a plugin-domain tagged error carried in
+ * RETURNED data (never a thrown coded failure).
+ */
+type AdvisorModelReasoningPayload =
+  | { efforts: readonly ReasoningEffortOption[]; defaultEffort?: string }
+  | { error: { tag: string; message: string } }
+
 /** Why a provider offers no model options (KD-S2 empty case → guidance copy). */
 export type ModelsEmptyReason =
   /** The resolved profile declares an (empty) `models` list — profile wins. */
@@ -146,7 +176,7 @@ export type ModelsEmptyReason =
 
 /**
  * The user-layer draft the form edits
- * (provider/model/systemPrompt/immuneTurns/maxDeltaMessages/maxTokens/proseFallback).
+ * (provider/model/systemPrompt/immuneTurns/maxDeltaMessages/maxTokens/proseFallback/reasoningEffort).
  */
 export interface AdvisorDraft {
   /** Provider route; required (non-empty). */
@@ -167,6 +197,13 @@ export interface AdvisorDraft {
   maxTokens?: number
   /** Opt-in prose fallback (KD-I2, issue #102); default false. */
   proseFallback?: boolean
+  /**
+   * Thinking-effort override (plan dsh-advisor-reasoning-effort); absent/'' =
+   * automatic — the runtime sends the smallest effort the model declares.
+   * Mirroring the provider/model clear semantics: a cleared select with a
+   * seeded value diffs to an explicit '' override, unseeded → omitted.
+   */
+  reasoningEffort?: string
 }
 
 /** Why an Apply failed (copy keys resolve in the card; raw text passes through). */
@@ -194,6 +231,21 @@ export interface AdvisorSettingsState {
   modelsByProvider: Readonly<Record<string, readonly ModelOption[]>>
   /** Empty-options reason per provider route (KD-S2 guidance). */
   modelsEmptyReason: Readonly<Record<string, ModelsEmptyReason>>
+  /**
+   * Thinking-effort options per `${provider}\u0000${model}` key, resolved
+   * through the T2 capability endpoint (plan dsh-advisor-reasoning-effort) —
+   * cached on success only and invalidated on every load() like the model
+   * caches (a failed resolution never pollutes this record).
+   */
+  modelReasoning: Readonly<Record<string, readonly ReasoningEffortOption[]>>
+  /**
+   * Capability resolution state per key: 'loading' while the first fetch for
+   * the key is in flight, 'ready' once the options cached, 'unavailable'
+   * when the endpoint answered with a tagged data error or the transport
+   * failed. The card renders only the auto option + the unavailable hint for
+   * 'unavailable'.
+   */
+  modelReasoningState: Readonly<Record<string, 'loading' | 'ready' | 'unavailable'>>
   /** Namespace views by ns, for the provider join. */
   namespaces: Readonly<Record<string, SettingsNamespaceView>>
   /**
@@ -264,6 +316,9 @@ function draftOfConfig(config: AdvisorConfigView | undefined): AdvisorDraft {
     // the keys (the gateway's S1 fallback mirrors the raw source verbatim).
     maxTokens: numberField(config?.maxTokens, 768),
     proseFallback: typeof config?.proseFallback === 'boolean' ? config.proseFallback : false,
+    // Thinking-effort override (T1 key): absent on the wire → automatic —
+    // the seed never invents a value the host does not pin.
+    reasoningEffort: stringField(config?.reasoningEffort),
   }
 }
 
@@ -286,6 +341,8 @@ export class AdvisorSettingsStore {
     providers: [],
     modelsByProvider: {},
     modelsEmptyReason: {},
+    modelReasoning: {},
+    modelReasoningState: {},
     namespaces: {},
     advisorPresent: false,
     // qc1 S-2: the degraded latch defaults false — a first mount / healthy
@@ -318,6 +375,17 @@ export class AdvisorSettingsStore {
 
   /** In-flight model resolutions (one per provider). */
   private inflightModels = new Set<string>()
+
+  /** In-flight capability resolutions (one per `${provider}\u0000${model}` key). */
+  private inflightReasoning = new Set<string>()
+
+  /**
+   * Bumped by every successful load(): a capability fetch started before the
+   * bump is stale (the invalidation that triggered the reload happened
+   * mid-fetch) and caches nothing — the same generation-fence shape as
+   * `catalogGeneration` (qc1 W-1 / qc3 S-1).
+   */
+  private reasoningGeneration = 0
 
   /** The draft is seeded once (first load); refreshes never clobber edits. */
   private draftSeeded = false
@@ -450,6 +518,8 @@ export class AdvisorSettingsStore {
     this.catalog = undefined
     this.catalogPromise = undefined
     this.inflightModels.clear()
+    this.reasoningGeneration += 1
+    this.inflightReasoning.clear()
     this.store.update((s) => {
       s.status = 'ready'
       s.error = null
@@ -464,6 +534,8 @@ export class AdvisorSettingsStore {
       s.degraded = config === undefined
       s.modelsByProvider = {}
       s.modelsEmptyReason = {}
+      s.modelReasoning = {}
+      s.modelReasoningState = {}
       // KD-U2 dirty recompute point: the seed just settled (line above — the
       // same synchronous tick, no await in between). Only a REAL resolved
       // config recomputes — on a get failure the draft keeps its previous
@@ -473,10 +545,13 @@ export class AdvisorSettingsStore {
       if (config !== undefined) s.dirty = this.recomputeDirty(s.draft)
     })
     // Model options for the provider already selected by the stored config,
-    // so a freshly opened form shows the options without interaction.
+    // so a freshly opened form shows the options without interaction; the
+    // stored pair's thinking-effort capability resolves the same way (T3).
     const selected = this.seed.provider
     if (selected !== undefined && options.some(option => option.provider === selected)) {
       void this.ensureModels(selected)
+      const seedModel = this.seed.model
+      if (seedModel !== undefined) void this.ensureModelReasoning(selected, seedModel)
     }
   }
 
@@ -568,6 +643,58 @@ export class AdvisorSettingsStore {
     }
   }
 
+  /**
+   * Resolve the thinking-effort options for one model through the T2
+   * capability endpoint (`advisor/modelReasoning`, plan
+   * dsh-advisor-reasoning-effort), keyed by `${provider}\u0000${model}`. At
+   * most one fetch per key (concurrent first resolutions share the in-flight
+   * work) and cached on success only: a tagged data error or a transport
+   * failure latches 'unavailable' (the select degrades to the auto option)
+   * without polluting the options record, until a load() invalidates the
+   * caches. A fetch started before a load() bump is stale and caches nothing
+   * (the same generation-fence shape as the catalog fetch, qc1 W-1 / qc3 S-1).
+   * No-op without a complete pair.
+   * @param provider - provider route id.
+   * @param model - model id.
+   * @returns nothing; the snapshot carries the outcome.
+   */
+  async ensureModelReasoning(provider: string, model: string): Promise<void> {
+    const key = `${provider}\u0000${model}`
+    if (this.inflightReasoning.has(key)) return
+    const state = this.store.getSnapshot()
+    if (Object.hasOwn(state.modelReasoning, key) || Object.hasOwn(state.modelReasoningState, key)) return
+    this.inflightReasoning.add(key)
+    const generation = this.reasoningGeneration
+    this.store.update((s) => {
+      s.modelReasoningState = { ...s.modelReasoningState, [key]: 'loading' }
+    })
+    try {
+      const result = await this.rpc.call('/api', 'advisor/modelReasoning', { args: { provider, model } })
+      if (generation !== this.reasoningGeneration) return
+      const payload = result.ok ? result.value as AdvisorModelReasoningPayload : undefined
+      if (payload !== undefined && 'efforts' in payload) {
+        this.store.update((s) => {
+          s.modelReasoning = { ...s.modelReasoning, [key]: payload.efforts }
+          s.modelReasoningState = { ...s.modelReasoningState, [key]: 'ready' }
+        })
+      } else {
+        // Tagged data error ({ error }) or transport failure (ok:false): the
+        // capability stays unknown — the select renders only the auto option.
+        this.store.update((s) => {
+          s.modelReasoningState = { ...s.modelReasoningState, [key]: 'unavailable' }
+        })
+      }
+    } catch {
+      if (generation === this.reasoningGeneration) {
+        this.store.update((s) => {
+          s.modelReasoningState = { ...s.modelReasoningState, [key]: 'unavailable' }
+        })
+      }
+    } finally {
+      this.inflightReasoning.delete(key)
+    }
+  }
+
   /** Set or clear the provider ('' clears); switches invalidate the chosen model. */
   setProvider(provider: string): void {
     const trimmed = provider.trim()
@@ -584,11 +711,23 @@ export class AdvisorSettingsStore {
     if (trimmed.length > 0) void this.ensureModels(trimmed)
   }
 
-  /** Set or clear the model ('' clears). */
+  /** Set or clear the model ('' clears); a chosen model resolves its thinking-effort capability. */
   setModel(model: string): void {
     const trimmed = model.trim()
     if (trimmed.length === 0) this.clearField('model')
     else this.setField('model', trimmed)
+    const { provider } = this.store.getSnapshot().draft
+    if (provider !== undefined && trimmed.length > 0) void this.ensureModelReasoning(provider, trimmed)
+  }
+
+  /**
+   * Set or clear the thinking-effort override ('' = automatic — the runtime
+   * sends the smallest effort the selected model declares).
+   */
+  setReasoningEffort(value: string): void {
+    const trimmed = value.trim()
+    if (trimmed.length === 0) this.clearField('reasoningEffort')
+    else this.setField('reasoningEffort', trimmed)
   }
 
   /** Set the system prompt override. */
@@ -752,8 +891,10 @@ export class AdvisorSettingsStore {
    * stale read never clobbers concurrent changes to untouched keys and base
    * (plugin-row) values stay in place. A cleared provider/model the seed pins
    * becomes an explicit `''` override (the gateway merge cannot express an
-   * unset, and the resolver treats '' as absent); a cleared number field is
-   * omitted (the stored value stays unchanged).
+   * unset, and the resolver treats '' as absent); a cleared reasoningEffort
+   * the seed pins writes the same `''` clear (the host resolver normalizes ''
+   * back to automatic, RD-1); a cleared number field is omitted (the stored
+   * value stays unchanged).
    */
   private patchFor(draft: AdvisorDraft): Record<string, unknown> {
     const patch: Record<string, unknown> = {}
@@ -767,7 +908,7 @@ export class AdvisorSettingsStore {
         patch[key] = next
       }
     }
-    for (const key of ['provider', 'model'] as const) {
+    for (const key of ['provider', 'model', 'reasoningEffort'] as const) {
       const next = draft[key]
       if (next !== undefined) {
         if (JSON.stringify(this.seed[key]) !== JSON.stringify(next)) {

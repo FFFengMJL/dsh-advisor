@@ -216,6 +216,24 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
   const modelStale = !providerStale && draft.model !== undefined
     && selectedModels.length > 0
     && !selectedModels.some(option => option.id === draft.model)
+  // Thinking-effort capability (plan dsh-advisor-reasoning-effort, T3): the
+  // options for the SELECTED pair, keyed `${provider}\u0000${model}` — 'ready'
+  // renders the declared efforts, 'unavailable' degrades to the auto option
+  // + hint, 'loading'/no key renders the auto option alone (the fetch the
+  // model select triggered is still in flight).
+  const reasoningKey = draft.provider !== undefined && draft.model !== undefined
+    ? `${draft.provider}\u0000${draft.model}`
+    : undefined
+  const reasoningState = reasoningKey === undefined ? undefined : state.modelReasoningState[reasoningKey]
+  const reasoningOptions = reasoningKey === undefined ? undefined : state.modelReasoning[reasoningKey]
+  const reasoningUnavailable = reasoningState === 'unavailable'
+  // A stored effort the selected model no longer declares: warn like the
+  // stale provider/model copy — the user keeps the stored value (the host
+  // falls back to the smallest declared effort) or reselects; Save is never
+  // gated by the hint.
+  const effortStale = reasoningState === 'ready'
+    && draft.reasoningEffort !== undefined
+    && !(reasoningOptions ?? []).some(option => option.id === draft.reasoningEffort)
   const errorText = applyState.kind === 'error' ? failureCopy(applyState.failure, t) : undefined
   // Upstream disabled semantics (Global Constraints): save = !dirty ||
   // invalid || saving; discard = !dirty || saving. In a read-only
@@ -257,24 +275,56 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
           {providerEmpty ? <p className={styles['warnHint']}>{t('providerRequired')}</p> : null}
           {providerStale ? <p className={styles['hint']}>{t('staleProvider')}</p> : null}
         </div>
-        <div className={styles['field']}>
-          <label htmlFor="advisor-model" className={styles['fieldLabel']}>{t('model')}</label>
-          <select
-            id="advisor-model"
-            aria-label={t('model')}
-            className={`${styles['input']} ${styles['selectInput']}`}
-            value={draft.model ?? ''}
-            disabled={busy || draft.provider === undefined || selectedModels.length === 0}
-            onChange={(event) => { controller.setModel(event.target.value) }}
-          >
-            <option value="">{t('modelPlaceholder')}</option>
-            {selectedModels.map(option => (
-              <option key={option.id} value={option.id}>{option.name}</option>
-            ))}
-          </select>
-          {modelsEmpty ? <p className={styles['hint']}>{t('noModels')}</p> : null}
-          {modelStale ? <p className={styles['hint']}>{t('staleModel')}</p> : null}
-          {!providerEmpty && modelEmpty ? <p className={styles['warnHint']}>{t('modelRequired')}</p> : null}
+        {/* The model / thinking-effort pair (RD-4): the same two-column grid
+            as the number fields below; the group carries the hairline
+            separator the model field used to draw as a direct .field child. */}
+        <div className={styles['pairFields']}>
+          <div className={styles['field']}>
+            <label htmlFor="advisor-model" className={styles['fieldLabel']}>{t('model')}</label>
+            <select
+              id="advisor-model"
+              aria-label={t('model')}
+              className={`${styles['input']} ${styles['selectInput']}`}
+              value={draft.model ?? ''}
+              disabled={busy || draft.provider === undefined || selectedModels.length === 0}
+              onChange={(event) => { controller.setModel(event.target.value) }}
+            >
+              <option value="">{t('modelPlaceholder')}</option>
+              {selectedModels.map(option => (
+                <option key={option.id} value={option.id}>{option.name}</option>
+              ))}
+            </select>
+            {modelsEmpty ? <p className={styles['hint']}>{t('noModels')}</p> : null}
+            {modelStale ? <p className={styles['hint']}>{t('staleModel')}</p> : null}
+            {!providerEmpty && modelEmpty ? <p className={styles['warnHint']}>{t('modelRequired')}</p> : null}
+          </div>
+          <div className={styles['field']}>
+            <label htmlFor="advisor-reasoning-effort" className={styles['fieldLabel']}>{t('reasoningEffort')}</label>
+            {/* Thinking-effort select (plan dsh-advisor-reasoning-effort, T3):
+                '' = automatic (the smallest effort the selected model
+                declares). The options come from the T2 capability endpoint —
+                never from a client-side catalog (a profile-declared model has
+                no catalog entry; RD-3). The select stays enabled for an
+                unavailable model so a seeded value can be cleared back to
+                auto. */}
+            <select
+              id="advisor-reasoning-effort"
+              aria-label={t('reasoningEffort')}
+              className={`${styles['input']} ${styles['selectInput']}`}
+              value={draft.reasoningEffort ?? ''}
+              disabled={busy || reasoningKey === undefined}
+              onChange={(event) => { controller.setReasoningEffort(event.target.value) }}
+            >
+              <option value="">{t('reasoningEffortAuto')}</option>
+              {(reasoningOptions ?? []).map(option => (
+                <option key={option.id} value={option.id}>{option.name || option.id}</option>
+              ))}
+            </select>
+            {reasoningUnavailable
+              ? <p className={styles['hint']}>{t('reasoningEffortUnavailable')}</p>
+              : <p className={styles['hint']}>{t('reasoningEffortHint')}</p>}
+            {effortStale ? <p className={styles['hint']}>{t('reasoningEffortStale')}</p> : null}
+          </div>
         </div>
         <div className={styles['field']}>
           <label htmlFor="advisor-system-prompt" className={styles['fieldLabel']}>{t('systemPrompt')}</label>

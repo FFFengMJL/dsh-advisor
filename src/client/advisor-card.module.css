@@ -166,6 +166,28 @@ select.input {
   padding: 0;
 }
 
+/* The model / thinking-effort pair (plan dsh-advisor-reasoning-effort, RD-4):
+   the same two-column grid rules as .numberFields. The group sits mid-run
+   (the system-prompt field follows), so it carries the hairline separator
+   itself — the model field used to draw it as a direct .field child. */
+.pairFields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.pairFields .field {
+  padding: 0;
+}
+
+/* The wrapper is not a .field, so the direct-sibling separator above no
+   longer covers the field after the pair — restore it explicitly. */
+.form > .pairFields + .field {
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
 /* The boolean toggle (proseFallback, issue #102): the ONLY checkbox on the
    card. The .input chrome (34px text-field box, full width) must NOT apply to
    a checkbox, so this keeps the geometry native and tints the control with
