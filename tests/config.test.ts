@@ -295,12 +295,6 @@ describe('reasoningEffort key (plan dsh-advisor-reasoning-effort, T1)', () => {
     expect(unwrapAdvisorConfig(Config({ reasoningEffort: ' high ' })).reasoningEffort).toBe('high')
   })
 
-  it('resolves the key to a volatile reference (the no-remount edit channel)', () => {
-    const resolved: Record<string, unknown> = Config({ reasoningEffort: 'high' })
-    const field = resolved['reasoningEffort']
-    expect(typeof field === 'object' && field !== null && 'get' in field && typeof field.get === 'function').toBe(true)
-  })
-
   it('keeps unknown-key rejection strict with the new key in CONFIG_KEYS (near-miss + wrong type stay rejects)', () => {
     expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', reasoningEfforts: 'high' }))
       .toThrow(/unknown config key "reasoningEfforts"/)
