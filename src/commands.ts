@@ -336,7 +336,8 @@ export interface AdvisorSessionStatus {
  * ONLY when a drop counter is non-zero (KD-I3, issue #102) — one `Dropped:`
  * line with the per-class counts, the ISO timestamp of each class's last drop
  * when present, and the same repair hints the runtime's warn-once logs carry
- * (empty → raise maxTokens; unparsed → enable proseFallback). The zero-drop
+ * (empty → the model returned a completed response with no content; unparsed
+ * → enable proseFallback). The zero-drop
  * output stays byte-identical to the pre-issue-#102 surface.
  */
 export function advisorStatusText(status: AdvisorSessionStatus): string {
@@ -360,7 +361,7 @@ export function advisorStatusText(status: AdvisorSessionStatus): string {
     const last = status.lastEmptyReplyAt === undefined
       ? ''
       : ` (last ${new Date(status.lastEmptyReplyAt).toISOString()})`
-    dropped.push(`${status.emptyReplies} empty${last} — consider raising the maxTokens setting`)
+    dropped.push(`${status.emptyReplies} empty${last} — the model returned a completed response with no content`)
   }
   if (status.unparsedReplies > 0) {
     const last = status.lastUnparsedReplyAt === undefined
@@ -479,15 +480,10 @@ export interface AdvisorComposedConfig {
   /** Delta window; 0 = unbounded (KD-3). */
   readonly maxDeltaMessages: number
   /**
-   * Token budget for one advisor call (KD-I1, issue #102). Present when the
-   * composed read carries the key (the schema default fills 768 on the
-   * resolved path); absent on a fallback-shaped read — the renderer shows the
-   * line only when present, never a defaulted value for an absent key.
-   */
-  readonly maxTokens?: number
-  /**
-   * Opt-in prose fallback switch (KD-I2, issue #102); same presence rule as
-   * {@link AdvisorComposedConfig.maxTokens}.
+   * Opt-in prose fallback switch (KD-I2, issue #102). Present when the
+   * composed read carries the key; absent on a fallback-shaped read — the
+   * renderer shows the line only when present, never a defaulted value for
+   * an absent key.
    */
   readonly proseFallback?: boolean
   /**
@@ -495,8 +491,8 @@ export interface AdvisorComposedConfig {
    * T1/RD-1). Present when the composed read carries a non-empty key; ABSENT
    * means AUTOMATIC — the runtime sends the smallest effort the resolved model
    * declares, and a model declaring none sends no option at all. Same presence
-   * rule as {@link AdvisorComposedConfig.maxTokens}: an absent key renders no
-   * line, never an invented default.
+   * rule as {@link AdvisorComposedConfig.proseFallback}: an absent key renders
+   * no line, never an invented default.
    */
   readonly reasoningEffort?: string
   /** True when the composed config carries a custom system prompt ("" = unset). */
@@ -552,10 +548,10 @@ export function advisorConfigText(config: AdvisorComposedConfig): string {
   // them: a fallback-shaped read omits the optional keys, and inventing a
   // default marker there would misreport a store whose real values differ —
   // the same lie class the gateway wire fix (qc1 W-1) removes. Absent = no
-  // line, matching the Model/Reason lines' conditional style.
-  if (config.maxTokens !== undefined) lines.push(`maxTokens: ${config.maxTokens}`)
+  // line, matching the Model/Reason lines' conditional style. (No maxTokens
+  // line since the 2026-10-18 ruling — the model-side budget is gone.)
   if (config.proseFallback !== undefined) lines.push(`proseFallback: ${config.proseFallback ? 'on' : 'off'}`)
-  // The eighth key (plan dsh-advisor-reasoning-effort T1) follows the same
+  // The reasoning-effort key (plan dsh-advisor-reasoning-effort T1) follows the same
   // presence rule: an absent key means AUTOMATIC (the smallest effort the
   // model declares), so there is no value to print — rendering 'auto' for it
   // would invent a value the composed read never carried.

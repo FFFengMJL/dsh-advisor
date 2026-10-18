@@ -5,7 +5,9 @@
  * Contract under test:
  * - `AdvisorRuntime` (per-session): `enqueue(delta)` queues a rendered transcript
  *   delta and asynchronously drains it — one `llm.stream` call per delta with
- *   `{ provider, model, system, messages: [user delta], maxTokens: 768 }` and
+ *   `{ provider, model, system, messages: [user delta] }` (NO `maxTokens` —
+ *   the 2026-10-18 user ruling removed the model-side budget; output is
+ *   bounded at extraction by ADVISOR_NOTE_MAX_CHARS) and
  *   `purpose` left UNSET (KD-5). Extracted `{note, severity}` is handed to the
  *   `onNote` hook (the T5 emission guard wraps it).
  * - JSON-frame extraction (KD-2): first balanced `{…}` parsed, tolerant of
@@ -38,7 +40,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { LlmRuntime, LlmAdapter, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmFailure, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import { AdvisorRuntime, ADVISOR_MAX_TOKENS, ADVISOR_NOTE_MAX_CHARS, extractAdviceNote, extractProseFallbackNote } from '../src/advisor-runtime'
+import { AdvisorRuntime, ADVISOR_NOTE_MAX_CHARS, extractAdviceNote, extractProseFallbackNote } from '../src/advisor-runtime'
 import type { AdvisorLlm, AdvisorRuntimeOptions, AdvisorRuntimeStatus, AdviceNote } from '../src/advisor-runtime'
 import type { Delta } from '../src/transcript'
 import { apply } from '../src/index'
@@ -201,9 +203,8 @@ const textReply = (text: string): readonly StreamChunk[] => [
 
 /**
  * Chunk script for an empty reply — no text deltas, just the terminal finish
- * chunk (the issue #102 shape: a thinking model behind a gateway that cannot
- * turn reasoning off exhausts the token budget and returns an empty body;
- * constructible with either finish reason).
+ * chunk (the completed-but-no-content class; constructible with either
+ * finish reason).
  */
 const emptyReply = (kind: 'stop' | 'max-tokens'): readonly StreamChunk[] => [
   { type: 'finish', reason: kind === 'stop' ? { kind: 'stop' } : { kind: 'max-tokens' } },
@@ -260,9 +261,10 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
       provider: 'test-provider',
       model: 'test-model',
       system: TEST_SYSTEM_PROMPT,
-      maxTokens: ADVISOR_MAX_TOKENS,
       reasoningEffort: 'off',
     })
+    // 2026-10-18 ruling: no model-side budget rides the call.
+    expect('maxTokens' in options).toBe(false)
     // KD-5: purpose is a closed union and must be left unset for an advisor call.
     expect(options.purpose).toBeUndefined()
     expect('purpose' in options).toBe(false)
@@ -323,9 +325,9 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
       provider: 'test-provider',
       model: 'test-model',
       system: TEST_SYSTEM_PROMPT,
-      maxTokens: ADVISOR_MAX_TOKENS,
     })
     expect('reasoningEffort' in options).toBe(false)
+    expect('maxTokens' in options).toBe(false)
   })
 
   it('a capability-resolution failure also omits reasoningEffort and never fails the call', async () => {
@@ -374,8 +376,8 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     // Closed whitelist on both calls (T2-style): call 0 has no reasoningEffort
     // (the failure is not a verdict), call 1 re-advertises 'off' after the
     // fresh resolution — same key set minus/plus reasoningEffort.
-    expect(Object.keys(llm.calls[0]!).sort()).toEqual(['maxTokens', 'messages', 'model', 'provider', 'signal', 'system'])
-    expect(Object.keys(llm.calls[1]!).sort()).toEqual(['maxTokens', 'messages', 'model', 'provider', 'reasoningEffort', 'signal', 'system'])
+    expect(Object.keys(llm.calls[0]!).sort()).toEqual(['messages', 'model', 'provider', 'signal', 'system'])
+    expect(Object.keys(llm.calls[1]!).sort()).toEqual(['messages', 'model', 'provider', 'reasoningEffort', 'signal', 'system'])
     // Zero tools contract: no advisor call ever carries a tools key.
     expect('tools' in llm.calls[0]!).toBe(false)
     expect('tools' in llm.calls[1]!).toBe(false)
@@ -529,18 +531,18 @@ describe('AdvisorRuntime — minimal request shape (AC-1 closed whitelist)', () 
     expect(llm.calls).toHaveLength(1)
     const options = llm.calls[0]!
     // Closed whitelist (AC-1): the exact sorted key set, nothing more.
-    expect(Object.keys(options).sort()).toEqual(['maxTokens', 'messages', 'model', 'provider', 'reasoningEffort', 'signal', 'system'])
+    expect(Object.keys(options).sort()).toEqual(['messages', 'model', 'provider', 'reasoningEffort', 'signal', 'system'])
     // Zero-tools contract; no temperature/stop tuning; no purpose (KD-5).
     expect('tools' in options).toBe(false)
     expect('temperature' in options).toBe(false)
     expect('stop' in options).toBe(false)
     expect('purpose' in options).toBe(false)
-    // Single user delta with the configured system prompt and token cap.
+    // 2026-10-18 ruling: no model-side token budget on any advisor call.
+    expect('maxTokens' in options).toBe(false)
+    // Single user delta with the configured system prompt.
     expect(options.messages).toHaveLength(1)
     expect(options.messages[0]!.role).toBe('user')
     expect(options.system).toBe(TEST_SYSTEM_PROMPT)
-    // KD-6 frozen value (= ADVISOR_MAX_TOKENS)
-    expect(options.maxTokens).toBe(768)
   })
 
   it('sends the same minimal request without reasoningEffort when the model has no reasoning capability', async () => {
@@ -553,51 +555,37 @@ describe('AdvisorRuntime — minimal request shape (AC-1 closed whitelist)', () 
     expect(llm.calls).toHaveLength(1)
     const options = llm.calls[0]!
     // Closed whitelist minus reasoningEffort (capability 'none' → not advertised).
-    expect(Object.keys(options).sort()).toEqual(['maxTokens', 'messages', 'model', 'provider', 'signal', 'system'])
+    expect(Object.keys(options).sort()).toEqual(['messages', 'model', 'provider', 'signal', 'system'])
     expect('reasoningEffort' in options).toBe(false)
     expect('tools' in options).toBe(false)
     expect('temperature' in options).toBe(false)
     expect('stop' in options).toBe(false)
     expect('purpose' in options).toBe(false)
+    // 2026-10-18 ruling: no model-side token budget on any advisor call.
+    expect('maxTokens' in options).toBe(false)
     expect(options.messages).toHaveLength(1)
     expect(options.messages[0]!.role).toBe('user')
     expect(options.system).toBe(TEST_SYSTEM_PROMPT)
-    // KD-6 frozen value (= ADVISOR_MAX_TOKENS)
-    expect(options.maxTokens).toBe(768)
   })
 })
 
 // ---------------------------------------------------------------------------
-// Configurable maxTokens (KD-I1, issue #102) — the budget is an operator
-// setting; the code default stays ADVISOR_MAX_TOKENS (KD-6 default unchanged)
+// No model-side budget (2026-10-18 user ruling, superseding KD-I1) — the
+// advisor call carries NO maxTokens; the adapter/model default applies
 // ---------------------------------------------------------------------------
 
-describe('AdvisorRuntime — configurable maxTokens (KD-I1, issue #102)', () => {
-  it('defaults the budget to ADVISOR_MAX_TOKENS (768) when the option is absent (KD-6 default unchanged)', async () => {
-    const llm = new FakeLlm([{ chunks: textReply('{"note":"default budget"}') }])
+describe('AdvisorRuntime — no model-side token budget (2026-10-18 ruling)', () => {
+  it('never sends maxTokens on the advisor call (the adapter/model default applies)', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"no budget"}') }])
     const { runtime, notes } = makeRuntime(llm)
 
     runtime.enqueue(delta('update'))
     await runtime.waitForDrain()
 
-    expect(notes).toEqual([{ note: 'default budget', severity: 'nit' }])
+    expect(notes).toEqual([{ note: 'no budget', severity: 'nit' }])
     expect(llm.calls).toHaveLength(1)
-    expect(llm.calls[0]!.maxTokens).toBe(ADVISOR_MAX_TOKENS)
-    expect(llm.calls[0]!.maxTokens).toBe(768)
-  })
-
-  it('threads a configured maxTokens into GenerateOptions.maxTokens (AC-1a)', async () => {
-    // The issue #102 reporter's validated workaround: 4096 restores output for
-    // a thinking model behind a third-party gateway.
-    const llm = new FakeLlm([{ chunks: textReply('{"note":"big budget"}') }])
-    const { runtime, notes } = makeRuntime(llm, { maxTokens: 4096 })
-
-    runtime.enqueue(delta('update'))
-    await runtime.waitForDrain()
-
-    expect(notes).toEqual([{ note: 'big budget', severity: 'nit' }])
-    expect(llm.calls).toHaveLength(1)
-    expect(llm.calls[0]!.maxTokens).toBe(4096)
+    expect('maxTokens' in llm.calls[0]!).toBe(false)
+    expect(llm.calls[0]!.maxTokens).toBeUndefined()
   })
 })
 
@@ -745,14 +733,40 @@ describe('AdvisorRuntime — drop counters (KD-I3, issue #102)', () => {
 
     expect(runtime.emptyReplies).toBe(2)
     expect(runtime.unparsedReplies).toBe(2)
-    // Exactly one warn per class, each carrying its fix hint (empty → raise
-    // the budget; unparsed → enable the fallback); repeats fall back to debug.
-    const emptyWarns = warn.mock.calls.filter(([m]) => typeof m === 'string' && m.includes('consider raising maxTokens'))
+    // Exactly one warn per class, each carrying its condition hint (empty →
+    // the model returned a completed response with no content; unparsed →
+    // enable the fallback); repeats fall back to debug.
+    const emptyWarns = warn.mock.calls.filter(([m]) => typeof m === 'string' && m.includes('empty reply dropped'))
     const unparsedWarns = warn.mock.calls.filter(([m]) => typeof m === 'string' && m.includes('consider enabling proseFallback'))
     expect(emptyWarns).toHaveLength(1)
     expect(unparsedWarns).toHaveLength(1)
     const emptyWarnPayload = emptyWarns[0]![1] as { finish?: string }
     expect(emptyWarnPayload.finish).toBe('max-tokens')
+    // The old budget hint is gone everywhere (2026-10-18 ruling).
+    expect(warn.mock.calls.some(([m]) => typeof m === 'string' && m.includes('maxTokens'))).toBe(false)
+  })
+
+  it('treats an EMPTY_RESPONSE failure as the empty-reply class: no retry, counted, no note (2026-10-18 ruling)', async () => {
+    // Pre-ruling this code was classified TRANSIENT: retry once → drop, with
+    // the drop invisible to the KD-I3 counters. Now one attempt, counted as
+    // empty, no note delivered, runtime keeps running.
+    const llm = new FakeLlm([
+      { chunks: errorReply({ message: 'response completed with no content', code: 'EMPTY_RESPONSE' }) },
+      { chunks: textReply('{"note":"next delta still drains"}') },
+    ])
+    const { runtime, notes } = makeRuntime(llm, { logger: { debug: () => {}, warn: () => {} } })
+
+    runtime.enqueue(delta('update one'))
+    runtime.enqueue(delta('update two'))
+    await runtime.waitForDrain()
+
+    // NOT retried: one call for the EMPTY_RESPONSE delta, one for the next.
+    expect(llm.calls).toHaveLength(2)
+    expect(notes).toEqual([{ note: 'next delta still drains', severity: 'nit' }])
+    expect(runtime.emptyReplies).toBe(1)
+    expect(runtime.unparsedReplies).toBe(0)
+    expect(runtime.lastEmptyReplyAt).toBeTypeOf('number')
+    expect(runtime.status()).toBe('running')
   })
 })
 
@@ -902,11 +916,16 @@ function extract(reply: string): AdviceNote | undefined {
 // ---------------------------------------------------------------------------
 
 describe('AdvisorRuntime — failure policy (KD-5)', () => {
-  it('retries a transient failure once after the backoff, then drops the delta', async () => {
+  it('retries a transient failure once after the backoff, then drops the delta with the failure detail in the drop warn', async () => {
     vi.useFakeTimers()
     try {
-      const llm = new FakeLlm([{ throw: new Error('server error') }, { throw: new Error('server error') }])
-      const { runtime, notes } = makeRuntime(llm, { retryBackoffMs: 1_000 })
+      const warn = vi.fn()
+      const debug = vi.fn()
+      const llm = new FakeLlm([
+        { throw: Object.assign(new Error('upstream blew up'), { code: 'SERVER' }) },
+        { throw: Object.assign(new Error('upstream blew up again'), { code: 'SERVER' }) },
+      ])
+      const { runtime, notes } = makeRuntime(llm, { retryBackoffMs: 1_000, logger: { debug, warn } })
 
       runtime.enqueue(delta('first update'))
       // The capability resolution (resolveModelInfo) is an async pre-step, so
@@ -917,6 +936,23 @@ describe('AdvisorRuntime — failure policy (KD-5)', () => {
       expect(notes).toEqual([])
       expect(runtime.pendingCount).toBe(0)
       expect(runtime.status()).toBe('running')
+      // Failure visibility (2026-10-18): each failed attempt is logged with
+      // the failure's code/message — warn on the first attempt, debug on the
+      // retry — and the terminal drop warn carries the LAST failure's
+      // code/message instead of a detail-less attempt count.
+      const firstAttemptWarn = warn.mock.calls.find(([m]) => m === 'advisor: model call failed — retrying')
+      expect(firstAttemptWarn).toBeTruthy()
+      expect(firstAttemptWarn![1]).toMatchObject({ code: 'SERVER', message: 'upstream blew up' })
+      const retryDebug = debug.mock.calls.find(([m]) => m === 'advisor: model call failed — retry exhausted')
+      expect(retryDebug).toBeTruthy()
+      expect(retryDebug![1]).toMatchObject({ code: 'SERVER', message: 'upstream blew up again' })
+      const dropWarn = warn.mock.calls.find(([m]) => m === 'advisor: dropping delta after transient failures')
+      expect(dropWarn).toBeTruthy()
+      expect(dropWarn![1]).toMatchObject({
+        attempts: 2,
+        code: 'SERVER',
+        message: 'upstream blew up again',
+      })
     } finally {
       vi.useRealTimers()
     }
@@ -1283,9 +1319,9 @@ describe('AdvisorRuntime — composed with a real LlmRuntime + registered adapte
       provider: 'test-provider',
       model: 'test-model',
       system: TEST_SYSTEM_PROMPT,
-      maxTokens: ADVISOR_MAX_TOKENS,
       reasoningEffort: 'off',
     })
+    expect('maxTokens' in adapter.requests[0]!).toBe(false)
     expect(adapter.requests[0]!.purpose).toBeUndefined()
     expect('purpose' in adapter.requests[0]!).toBe(false)
   })
@@ -1352,8 +1388,8 @@ describe('AdvisorRuntime — capability-gated reasoningEffort against a real Llm
       provider: 'plain',
       model: 'plain-model',
       system: TEST_SYSTEM_PROMPT,
-      maxTokens: ADVISOR_MAX_TOKENS,
     })
+    expect('maxTokens' in adapter.requests[0]!).toBe(false)
     expect('reasoningEffort' in adapter.requests[0]!).toBe(false)
   })
 })

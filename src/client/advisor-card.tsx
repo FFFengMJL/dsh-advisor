@@ -11,8 +11,9 @@
  * beneath it: provider select, model select (ALWAYS rendered — there is no
  * enable checkbox to gate them; the config-level `enabled` switch was removed
  * and the plugin-row toggle is the master switch), system-prompt textarea,
- * and the paired `immuneTurns`/`maxDeltaMessages` numbers (joined by
- * `maxTokens`, issue #102) plus the `proseFallback` checkbox; then the footer
+ * and the paired `immuneTurns`/`maxDeltaMessages` numbers plus the
+ * `proseFallback` checkbox (the `maxTokens` input was removed with the
+ * 2026-10-18 budget ruling); then the footer
  * with the failed message + Discard/Save carrying the upstream disabled
  * semantics — save = `!dirty || invalid || saving`, discard = `!dirty ||
  * saving` (KD-U1, Global Constraints). Save additionally carries `!writable`
@@ -415,28 +416,6 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
                 controller.setMaxDeltaMessages(event.target.value === '' ? undefined : Number(event.target.value))
               }}
             />
-          </div>
-          {/* Token budget (KD-I1, issue #102): same number-input pattern as
-              the sibling fields; the store clamps edits into the schema
-              bounds (128..16384), a cleared input stays omitted from the
-              patch. */}
-          <div className={styles['field']}>
-            <label htmlFor="advisor-max-tokens" className={styles['fieldLabel']}>{t('maxTokens')}</label>
-            <input
-              id="advisor-max-tokens"
-              aria-label={t('maxTokens')}
-              className={styles['input']}
-              type="number"
-              min={128}
-              max={16384}
-              step={1}
-              value={draft.maxTokens ?? ''}
-              disabled={busy}
-              onChange={(event) => {
-                controller.setMaxTokens(event.target.value === '' ? undefined : Number(event.target.value))
-              }}
-            />
-            <p className={styles['hint']}>{t('maxTokensHint')}</p>
           </div>
         </div>
       </div>

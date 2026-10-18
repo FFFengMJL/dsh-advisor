@@ -573,39 +573,30 @@ describe('settings live re-apply — conditional runtime rebuild (qc3 W-1 / qc1 
 })
 
 // ---------------------------------------------------------------------------
-// 4b. KD-I4 (issue #102): the global maxTokens/proseFallback runtime
-//     construction constants join the runtime signature — an edit rebuilds the
-//     runtime through the existing volatile-update path (the immuneTurns-only
+// 4b. KD-I4 (issue #102): the global proseFallback runtime construction
+//     constant joins the runtime signature — an edit rebuilds the runtime
+//     through the existing volatile-update path (the immuneTurns-only
 //     in-place latch path is pinned by the case above and must keep passing).
+//     (The former maxTokens member is gone with the 2026-10-18 budget ruling;
+//     a stale stored maxTokens line is tolerated and dropped by the resolver.)
 // ---------------------------------------------------------------------------
 
-describe('settings live re-apply — maxTokens/proseFallback rebuild (KD-I4, issue #102)', () => {
-  it('a maxTokens-only edit rebuilds the runtime: the next call carries the new budget', async () => {
+describe('settings live re-apply — proseFallback rebuild (KD-I4, issue #102)', () => {
+  it('a stored legacy maxTokens line never reaches the runtime: calls carry no budget, edits to other keys still work', async () => {
     const { ctx, adapter, entry } = await composeLiveHarness(
-      { provider: 'stub', model: 'stub-model' },
+      { provider: 'stub', model: 'stub-model', maxTokens: 4096 } as Partial<AdvisorConfig>,
       [
-        [...textReply('{"note":"before edit","severity":"nit"}')],
-        [...textReply('{"note":"after edit","severity":"nit"}')],
+        [...textReply('{"note":"legacy budget ignored","severity":"nit"}')],
       ],
     )
     const { agent, inject } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
-    // Pre-edit: the runtime uses the code default budget (ADVISOR_MAX_TOKENS).
     feed(ctx, session, log, simpleTurn(1, 'first request', 'first reply'))
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
-    expect(adapter.requests[0]!.maxTokens).toBe(768)
-
-    // A maxTokens edit is runtime-affecting (KD-I4): the signature changes, so
-    // the volatile re-apply rebuilds the runtime and the next call carries the
-    // NEW budget (a stale runtime would keep 768).
-    entry.commit(ctx, { maxTokens: 4096 })
-
-    feed(ctx, session, log, simpleTurn(2, 'second request', 'second reply'))
-    await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
-    expect(adapter.requests[1]!.maxTokens).toBe(4096)
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(2))
+    expect('maxTokens' in adapter.requests[0]!).toBe(false)
+    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
   })
 
   it('a proseFallback edit rebuilds the runtime: prose replies start producing notes', async () => {
@@ -814,11 +805,12 @@ describe('/advisor config — session-less composed readback (T2)', () => {
     // qc1 S-1 landed the renderer contract + renderer pins (commands.test.ts);
     // the composed config the REAL wiring hands it must carry the keys too —
     // otherwise the lines silently never render. The resolved read always
-    // carries them on the normal path (schema defaults fill 768/false), and a
+    // carries it on the normal path (the schema default fills false), and a
     // committed volatile edit is reflected live (same resolved source as the
-    // web card's /api/advisor/get readback).
+    // web card's /api/advisor/get readback). No maxTokens anywhere since the
+    // 2026-10-18 ruling.
     const { ctx, entry } = await composeLiveHarness(
-      { provider: 'stub', model: 'stub-model', maxTokens: 768, proseFallback: false },
+      { provider: 'stub', model: 'stub-model', proseFallback: false },
       [],
     )
     const handler = await registerCommands(ctx)
@@ -827,16 +819,16 @@ describe('/advisor config — session-less composed readback (T2)', () => {
     const defaults = invokeAdvisor(handler, 'config', session)
     expect(defaults.kind).toBe('success')
     if (defaults.kind === 'success') {
-      expect(defaults.text).toContain('maxTokens: 768')
       expect(defaults.text).toContain('proseFallback: off')
+      expect(defaults.text).not.toContain('maxTokens')
     }
 
-    entry.commit(ctx, { maxTokens: 4096, proseFallback: true })
+    entry.commit(ctx, { proseFallback: true })
     const edited = invokeAdvisor(handler, 'config', session)
     expect(edited.kind).toBe('success')
     if (edited.kind === 'success') {
-      expect(edited.text).toContain('maxTokens: 4096')
       expect(edited.text).toContain('proseFallback: on')
+      expect(edited.text).not.toContain('maxTokens')
     }
   })
 
@@ -907,7 +899,7 @@ describe('/advisor status — drop statistics through the real wiring (AC-3, iss
     const result = invokeAdvisor(handler, 'status', session)
     expect(result.kind).toBe('success')
     if (result.kind === 'success') {
-      expect(result.text).toContain('consider raising the maxTokens setting')
+      expect(result.text).toContain('the model returned a completed response with no content')
       expect(result.text).toContain('consider enabling the proseFallback setting')
       expect(result.text).toMatch(/Dropped: 1 empty \(last \d{4}-\d{2}-\d{2}T/)
       expect(result.text).toMatch(/1 unparsed \(last \d{4}-\d{2}-\d{2}T/)

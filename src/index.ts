@@ -63,7 +63,7 @@ import { AdvisorConfigGateway, advisorSessionError, advisorTypertContribution } 
 import type { AdvisorSessionGatewayFace, AdvisorSessionRpcResult } from './gateway.js'
 import { SessionTranscriptObserver } from './transcript.js'
 import type { Delta } from './transcript.js'
-import { ADVISOR_MAX_TOKENS, AdvisorRuntime } from './advisor-runtime.js'
+import { AdvisorRuntime } from './advisor-runtime.js'
 import type { AdviceNote } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
@@ -363,7 +363,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
    * Runtime-affecting signature per session — the values that pin one
    * {@link AdvisorRuntime}: the effective switch, the post-gate enable (S4),
    * the {provider, model, systemPrompt} triple, and the global
-   * maxTokens/proseFallback/reasoningEffort construction constants (KD-I4,
+   * proseFallback/reasoningEffort construction constants (KD-I4,
    * issue #102 + plan dsh-advisor-reasoning-effort — global-only like
    * systemPrompt, KD-I6). Recorded at runtime creation and compared on every
    * settings change (qc3 W-1 / qc1 W-2): only a signature change tears the
@@ -379,9 +379,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     // KD-I4 (issue #102): the global runtime-construction constants join the
     // signature — the same global resolved read as systemPrompt (never the
     // per-session route). Optional in the resolved contract (T1 review F-2):
-    // normalized here with the runtime's own defaults (ADVISOR_MAX_TOKENS /
-    // false / automatic = '') so an absent-vs-explicit-default edit is not a
-    // teardown.
+    // normalized here with the runtime's own defaults (false / automatic =
+    // '') so an absent-vs-explicit-default edit is not a teardown. The former
+    // maxTokens entry is gone with the key itself (2026-10-18 ruling).
     const globalResolved = safeResolved()
     return [
       effectiveEnabled(sessionId) ? 1 : 0,
@@ -389,7 +389,6 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       effective.provider ?? '',
       effective.model ?? '',
       effective.systemPrompt,
-      globalResolved.maxTokens ?? ADVISOR_MAX_TOKENS,
       globalResolved.proseFallback ?? false,
       globalResolved.reasoningEffort ?? '',
     ].join('\u0000')
@@ -412,15 +411,14 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     // The global runtime-construction constants — the same global resolved
     // read as systemPrompt (KD-I4/KD-I6, issue #102: global-only, never the
     // per-session route). Optional in the resolved contract (T1 review F-2):
-    // when absent, the runtime applies its own defaults (ADVISOR_MAX_TOKENS /
-    // false / automatic), which runtimeSignature normalizes with to stay in
-    // sync.
+    // when absent, the runtime applies its own defaults (false / automatic),
+    // which runtimeSignature normalizes with to stay in sync. No maxTokens
+    // is threaded anymore (2026-10-18 ruling — no model-side budget).
     const globalResolved = safeResolved()
     runtime = new AdvisorRuntime({
       provider: effective.provider!,
       model: effective.model!,
       systemPrompt: globalResolved.systemPrompt || DEFAULT_ADVISOR_SYSTEM_PROMPT,
-      maxTokens: globalResolved.maxTokens,
       proseFallback: globalResolved.proseFallback,
       // Plan dsh-advisor-reasoning-effort (RD-1/RD-2): absent/empty = the
       // smallest effort the resolved model declares.
@@ -585,7 +583,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
 
   // T1-settings live re-apply: construction-time latches (immuneTurns on the
   // delivery, maxDeltaMessages on the observer, systemPrompt + provider/model
-  // + the global maxTokens/proseFallback constants (KD-I4, issue #102) on
+  // + the global proseFallback constant (KD-I4, issue #102) on
   // each per-session runtime) are re-derived from the NEW source on every
   // committed volatile edit — the Loader's `loader/volatile-update` event,
   // dispatched to this fiber only after the committed values are readable —
@@ -820,15 +818,15 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         maxDeltaMessages: resolved.maxDeltaMessages,
         // qc1 S-1 / FW-1b R-1: the issue-#102 keys ride the same resolved
         // source the renderer reads. Present on the normal path (the schema
-        // defaults fill 768/false on the Loader resolution), absent on the S1
+        // default fills false on the Loader resolution), absent on the S1
         // containment fallback (safeFallback seeds only the scalar latches) —
         // conditional spread keeps absent-never-undefined, so the readback
         // renders the lines only when the read carries them (same pattern as
         // disabledReason; the renderer never invents a defaulted value for an
-        // absent key).
-        ...(resolved.maxTokens === undefined ? {} : { maxTokens: resolved.maxTokens }),
+        // absent key). No maxTokens line anymore (2026-10-18 ruling — the key
+        // is dropped by the resolver, never reaches the resolved contract).
         ...(resolved.proseFallback === undefined ? {} : { proseFallback: resolved.proseFallback }),
-        // T2 (plan dsh-advisor-reasoning-effort): the eighth key rides the same
+        // T2 (plan dsh-advisor-reasoning-effort): the seventh key rides the same
         // resolved source. An absent/empty value means AUTOMATIC (the runtime
         // sends the smallest declared effort) — conditional spread keeps
         // absent-never-undefined, so the renderer prints no line for it.

@@ -34,9 +34,10 @@
  * the ≥ v0.8.0 mirror, so a host older than the pin could misrender it
  * silently (documented fallback: remap to a select(on/off) two-option field).
  *
- * Field subset (2026-09-26; extended 2026-09-29, issue #102): the section
- * covers the six §5.1 keys (`provider` / `model` / `immuneTurns` /
- * `maxDeltaMessages` / `maxTokens` / `proseFallback`). `enabled` is
+ * Field subset (2026-09-26; extended 2026-09-29, issue #102; `maxTokens`
+ * removed 2026-10-18): the section covers the six §5.1 keys (`provider` /
+ * `model` / `immuneTurns` / `maxDeltaMessages` / `proseFallback` /
+ * `reasoningEffort`). `enabled` is
  * gone with the config-level switch it edited (the plugin-row toggle is the
  * master switch), and `systemPrompt` is intentionally NOT a field — the TUI
  * `text` control is single-line, and editing a multi-line prompt there would
@@ -135,7 +136,7 @@ export const TUI_SETTINGS_SECTIONS = 'tuiSettingsSections'
 export const ADVISOR_TUI_SETTINGS_NS = 'advisor'
 
 /** The declared "Advisor" section for the dsh-tui `/settings` screen: the
- * seven §5.1 keys (provider/model/immuneTurns/maxDeltaMessages/maxTokens/
+ * six §5.1 keys (provider/model/immuneTurns/maxDeltaMessages/
  * proseFallback/reasoningEffort) with zh/en labels + hints. Field paths are
  * single-element §5.1 flat keys, so staged edits map 1:1 onto the namespace
  * `mutate` paths. */
@@ -180,17 +181,6 @@ export const ADVISOR_TUI_SETTINGS_SECTION: TuiSettingsSection = {
       descriptions: { zh: '最大增量消息数', en: 'Max delta messages' },
       hint: 'Delta window (integer ≥ 0; 0 = unbounded).',
       hintDescriptions: { zh: '增量窗口（整数 ≥ 0；0 = 不限）。', en: 'Delta window (integer ≥ 0; 0 = unbounded).' },
-    },
-    {
-      path: ['maxTokens'],
-      kind: 'number',
-      label: 'Max tokens',
-      descriptions: { zh: '最大 token 数', en: 'Max tokens' },
-      hint: 'Token budget for one advisor review (integer 128–16384, default 768); raise it if a thinking model returns empty replies.',
-      hintDescriptions: {
-        zh: '单次评审的 token 预算（整数 128–16384，默认 768）；思考型模型返回空回复时请调高。',
-        en: 'Token budget for one advisor review (integer 128–16384, default 768); raise it if a thinking model returns empty replies.',
-      },
     },
     {
       // KD-I2 (issue #102): `boolean` is a native kind of the dsh-TUI ≥ v0.8.0

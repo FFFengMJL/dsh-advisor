@@ -3,11 +3,16 @@
  *
  * The exported schemastery `Config` schema is what the cordis Loader uses to
  * validate the plugin row config: it applies defaults (`immuneTurns` 3,
- * `maxDeltaMessages` 60, `systemPrompt` "", `maxTokens` 768,
- * `proseFallback` false) and enforces types/bounds (integers ≥ 0; maxTokens
- * 128..16384). `reasoningEffort` has NO default — an absent value means
+ * `maxDeltaMessages` 60, `systemPrompt` "", `proseFallback` false) and
+ * enforces types/bounds (integers ≥ 0). `reasoningEffort` has NO default —
+ * an absent value means
  * "automatic" (the smallest effort the resolved model declares), which no
- * concrete default can express. All eight live fields are declared
+ * concrete default can express. There is NO `maxTokens` key (2026-10-18
+ * user ruling, superseding KD-I1: on OpenAI-compatible APIs `max_tokens`
+ * caps reasoning + content together, so with thinking models the budget
+ * intermittently starved the final content — the advisor call now sends no
+ * `maxTokens` at all and output is bounded at extraction by
+ * `ADVISOR_NOTE_MAX_CHARS`). All seven live fields are declared
  * `.volatile()`:
  * the Loader commits edits to them into the running fiber's references WITHOUT
  * a remount (dsh 0.1.7-rc.1 — the settings.yaml user layer is gone), so
@@ -26,7 +31,8 @@
  * reference objects themselves. A legacy `enabled` key arriving in a raw
  * config (a stored profile predating the removal) is TOLERATED and silently
  * dropped — accepted but never persisted or read (2026-09-27 user ruling:
- * the stored row must not reject the plugin); every other unknown key is
+ * the stored row must not reject the plugin), and so is the 2026-10-18-
+ * removed `maxTokens` key; every other unknown key is
  * still rejected (spec §5.2 strict schema).
  *
  * @module dsh-advisor/config
@@ -46,17 +52,6 @@ export interface AdvisorConfig {
   readonly immuneTurns: number
   /** Delta window; integer ≥ 0, default 60, 0 = unbounded (KD-3). */
   readonly maxDeltaMessages: number
-  /**
-   * Token budget for one advisor call; integer 128..16384, default 768
-   * (KD-I1, issue #102 — the 2026-09-29 user-directed supersession of KD-6's
-   * code invariant: a thinking model behind a third-party gateway can exhaust
-   * a fixed budget on reasoning and come back empty, so the operator raises
-   * the budget via Settings instead). Optional in the raw contract: the
-   * schema default (768) fills it on the Loader path and plain-object entries
-   * may omit it — the runtime falls back to `ADVISOR_MAX_TOKENS`
-   * (src/advisor-runtime.ts), keeping the default behavior byte-identical.
-   */
-  readonly maxTokens?: number
   /**
    * Opt-in prose fallback (KD-I2, issue #102): when true, a reply with no
    * parseable JSON frame but non-empty text is delivered as a `nit` note
@@ -95,8 +90,6 @@ export interface ResolvedAdvisorConfig {
   readonly systemPrompt: string
   readonly immuneTurns: number
   readonly maxDeltaMessages: number
-  /** Token budget (KD-I1); absent on plain-object entries → runtime default 768. */
-  readonly maxTokens?: number
   /** Prose fallback switch (KD-I2); absent on plain-object entries → runtime default false. */
   readonly proseFallback?: boolean
   /**
@@ -121,7 +114,6 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'systemPrompt',
   'immuneTurns',
   'maxDeltaMessages',
-  'maxTokens',
   'proseFallback',
   'reasoningEffort',
 ])
@@ -129,15 +121,24 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
 /**
  * Removed config keys the strict unknown-key rejection TOLERATES — accepted
  * into a raw config but stripped from every snapshot/write so they are never
- * read and never re-persisted. Only the 2026-09-26-removed `enabled` lives
- * here: the plugin-row enable/disable toggle replaced the config-level master
- * switch, and stored profiles still carrying `enabled: false/true` must load
- * cleanly instead of being rejected (2026-09-27 user ruling — the stored line
- * is simply ignored; no compatibility surface beyond dropping the dead key).
+ * read and never re-persisted. Two keys live here:
+ *
+ * - the 2026-09-26-removed `enabled`: the plugin-row enable/disable toggle
+ *   replaced the config-level master switch, and stored profiles still
+ *   carrying `enabled: false/true` must load cleanly instead of being
+ *   rejected (2026-09-27 user ruling — the stored line is simply ignored);
+ * - the 2026-10-18-removed `maxTokens`: the model-side token budget was
+ *   removed entirely (user ruling superseding KD-I1 — on OpenAI-compatible
+ *   APIs `max_tokens` caps reasoning + content together, so the budget
+ *   starved the final content on thinking models). Stored profiles still
+ *   carrying a `maxTokens` line (e.g. the operator's live workaround value)
+ *   keep loading cleanly; the key is simply dropped.
+ *
  * Every other unknown key stays a hard reject (spec §5.2).
  */
 const LEGACY_KEYS: ReadonlySet<string> = new Set([
   'enabled',
+  'maxTokens',
 ])
 
 /**
@@ -147,7 +148,9 @@ const LEGACY_KEYS: ReadonlySet<string> = new Set([
  * disabled-with-reason instead of failing to load. There is no `enabled`
  * field: the plugin-row enable/disable toggle is the master switch, and a
  * stored `enabled:` key is tolerated and dropped by the resolver
- * ({@link LEGACY_KEYS}) — never read, never persisted.
+ * ({@link LEGACY_KEYS}) — never read, never persisted. Likewise there is no
+ * `maxTokens` field (2026-10-18 ruling): a stored `maxTokens:` line is
+ * tolerated and dropped the same way.
  *
  * Volatile (dsh 0.1.7-rc.1): every field is a LIVE field. The Loader commits
  * edits into the running fiber's references without remounting the plugin
@@ -168,7 +171,6 @@ export const Config = z.object({
   systemPrompt: z.string().default('').volatile(),
   immuneTurns: z.number().step(1).min(0).default(3).volatile(),
   maxDeltaMessages: z.number().step(1).min(0).default(60).volatile(),
-  maxTokens: z.number().step(1).min(128).max(16384).default(768).volatile(),
   proseFallback: z.boolean().default(false).volatile(),
   // No default (RD-1): an absent value means automatic, and schemastery's
   // `default()` would persist a concrete effort as the "unconfigured" value.
@@ -197,8 +199,6 @@ export interface VolatileAdvisorConfig {
   readonly systemPrompt: unknown
   readonly immuneTurns: unknown
   readonly maxDeltaMessages: unknown
-  /** Optional like {@link AdvisorConfig.maxTokens}: plain entries may omit it; the Loader path always carries it. */
-  readonly maxTokens?: unknown
   /** Optional like {@link AdvisorConfig.proseFallback}: plain entries may omit it; the Loader path always carries it. */
   readonly proseFallback?: unknown
   /** Optional like {@link AdvisorConfig.reasoningEffort}: plain entries may omit it; the Loader path always carries it. */
@@ -238,9 +238,10 @@ function normalizeReasoningEffort(value: unknown): string | undefined {
  * passes through for fields without a default — is normalized to `undefined`
  * so the resolved contract is null-free and the gate treats null exactly like
  * a missing value. Legacy keys ({@link LEGACY_KEYS}) are STRIPPED before the
- * rest-spread: the schema-removed `enabled` may arrive on a stored profile
- * (or an integration entry), and the snapshot must never carry it — no
- * consumer reads it and no snapshot-derived write can re-persist it. Every
+ * rest-spread: the schema-removed `enabled` and `maxTokens` may arrive on a
+ * stored profile (or an integration entry), and the snapshot must never
+ * carry them — no consumer reads them and no snapshot-derived write can
+ * re-persist them. Every
  * other key outside the schema rides along untouched (the schemastery object
  * resolver merges unknown keys through; they are never volatile-declared, so
  * they are never references) — the hard gate's unknown-key rejection must
@@ -250,11 +251,11 @@ function normalizeReasoningEffort(value: unknown): string | undefined {
  * config `resolveAdvisorConfig` consumes.
  */
 export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
-  // The raw side is loose on purpose: the schema-removed `enabled` is not a
-  // VolatileAdvisorConfig member but can arrive on any plain entry — the cast
-  // widens only to let the destructure strip it.
-  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, maxTokens, proseFallback, reasoningEffort, ...rest } =
-    raw as VolatileAdvisorConfig & { readonly enabled?: unknown }
+  // The raw side is loose on purpose: the schema-removed `enabled` and
+  // `maxTokens` are not VolatileAdvisorConfig members but can arrive on any
+  // plain entry — the cast widens only to let the destructure strip them.
+  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, proseFallback, reasoningEffort, maxTokens, ...rest } =
+    raw as VolatileAdvisorConfig & { readonly enabled?: unknown; readonly maxTokens?: unknown }
   return {
     ...rest,
     provider: unwrapReference<string | undefined>(provider) ?? undefined,
@@ -262,7 +263,6 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
     systemPrompt: unwrapReference<string>(systemPrompt),
     immuneTurns: unwrapReference<number>(immuneTurns),
     maxDeltaMessages: unwrapReference<number>(maxDeltaMessages),
-    maxTokens: unwrapReference<number | undefined>(maxTokens),
     proseFallback: unwrapReference<boolean | undefined>(proseFallback),
     reasoningEffort: normalizeReasoningEffort(unwrapReference<unknown>(reasoningEffort)),
   }
@@ -272,11 +272,12 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
  * Resolve the raw config into the runtime contract.
  *
  * - Rejects unknown keys (strict schema, spec §5.2) and non-object input.
- *   The 2026-09-26-removed `enabled` is the ONE tolerated exception
- *   ({@link LEGACY_KEYS}): a stored profile still carrying it loads cleanly,
- *   the key is stripped from the snapshot and never persisted (2026-09-27
- *   user ruling — the row toggle replaced it; ignoring the stored line is the
- *   whole migration surface). Every other unknown key is still a hard reject.
+ *   The 2026-09-26-removed `enabled` and the 2026-10-18-removed `maxTokens`
+ *   are the tolerated exceptions ({@link LEGACY_KEYS}): a stored profile
+ *   still carrying either loads cleanly, the key is stripped from the
+ *   snapshot and never persisted (2026-09-27 / 2026-10-18 user rulings —
+ *   the row toggle / budget removal replaced them; ignoring the stored line
+ *   is the whole migration surface). Every other unknown key is still a hard reject.
  * - Applies the explicit model gate (S4): `provider` or `model` missing/empty
  *   → disabled-with-reason, never throws, no model call. Both present →
  *   `enabled: true` (the post-gate flag).

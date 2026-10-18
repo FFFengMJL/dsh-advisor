@@ -10,10 +10,13 @@
  * - a FIFO queue of pending transcript deltas (bounded — spec §6 "bounded
  *   backlog"; drop-newest when full);
  * - a serialized async drain loop: one `llm.stream` call per delta with
- *   `{ provider, model, system, messages: [user delta], maxTokens }` (the
- *   configured budget — {@link AdvisorRuntimeOptions.maxTokens}, default
- *   `ADVISOR_MAX_TOKENS`) and `purpose` left UNSET (KD-5 — an advisor call is
- *   an ordinary conversation request);
+ *   `{ provider, model, system, messages: [user delta] }` and `purpose` left
+ *   UNSET (KD-5 — an advisor call is an ordinary conversation request). NO
+ *   `maxTokens` is sent (2026-10-18 user ruling, superseding the KD-I1
+ *   budget: on OpenAI-compatible APIs `max_tokens` caps reasoning + content
+ *   together, so with thinking models the budget intermittently starved the
+ *   final content — the adapter/model default applies instead, and the only
+ *   output bound is the extraction-side cap {@link ADVISOR_NOTE_MAX_CHARS});
  * - a call-level deadline on every `llm.stream` call (dsh-timeout `deadline`,
  *   fused with the dispose signal and raced per chunk): a hung provider stream
  *   times out instead of wedging the drain, and a timeout is a transient
@@ -28,8 +31,9 @@
  *   JSON frame keeps priority (a usable frame note blocks the fallback), and
  *   the default (off) preserves the KD-2 drop semantics;
  * - KD-I3 drop visibility (issue #102): a completed call whose reply yields
- *   no note is classified — EMPTY (body empty after trim; the classic case is
- *   a thinking model exhausting the token budget) vs UNPARSED (text present,
+ *   no note is classified — EMPTY (body empty after trim — the completed-but-
+ *   no-content class, including an `EMPTY_RESPONSE` failure: the model
+ *   returned a completed response with no content) vs UNPARSED (text present,
  *   no parseable frame, fallback off/rescued nothing) — counted with
  *   timestamps and warn-once hints, readable via the `emptyReplies` /
  *   `unparsedReplies` / `lastEmptyReplyAt` / `lastUnparsedReplyAt` getters
@@ -50,7 +54,7 @@
  */
 
 import { createUserMessage, isQuotaExceededError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import { INVALID_CREDENTIAL_CODE, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
+import { EMPTY_RESPONSE_CODE, INVALID_CREDENTIAL_CODE, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type {
   FinishReason,
   GenerateOptions,
@@ -130,14 +134,6 @@ export interface AdvisorRuntimeOptions {
   /** Bounded backlog (spec §6); default 32 — drop-newest with a log when full. */
   readonly maxQueued?: number
   /**
-   * Token budget for one advisor call (KD-I1, issue #102 — the config key
-   * `maxTokens` threaded through): when omitted the code default
-   * {@link ADVISOR_MAX_TOKENS} (768) applies, keeping every pre-existing
-   * 768 pin valid. Bounds (128..16384) are enforced by the config schema;
-   * the runtime threads the value as-is.
-   */
-  readonly maxTokens?: number
-  /**
    * Opt-in prose fallback (KD-I2, issue #102): when true, a completed call
    * whose reply has text but yields NO valid note from its JSON frames — no
    * parseable frame at all, or frames whose note is empty/invalid — delivers
@@ -174,39 +170,21 @@ export interface AdvisorRuntimeOptions {
 }
 
 /**
- * User-directed token budget for one advisor call (256 → 5120 → 768).
- * Exported so the test suites assert the pinned value instead of a magic
- * literal.
- *
- * Supersession chain: the frozen spec §8.2 (KD-2) pins `maxTokens: 256` ("so
- * a runaway reply cannot blow the budget"); the 5120 value (a 20x worst-case
- * per-call ceiling) was a USER-DIRECTED supersession adopted together with
- * `reasoningEffort: 'off'` when reasoning-heavy replies could starve the JSON
- * frame. With the reasoning effort now defaulting to the model's SMALLEST
- * declared effort (see `resolveReasoningEffort`), the reasoning headroom is
- * unnecessary: this 768 value is the latest USER-DIRECTED supersession — a
- * modest budget that fits one `ADVISOR_NOTE_MAX_CHARS` note plus the JSON
- * frame. The runaway-reply guard stays re-bounded downstream:
- * `extractAdviceNote` caps the note at `ADVISOR_NOTE_MAX_CHARS` and
- * `buildAdvisorMessage` bounds the notice summary via `boundContextSummary`.
- *
- * KD-I1 (issue #102, user direction 2026-09-29): KD-6's "code invariant, not
- * an operator switch" ruling was superseded again — the budget is now
- * operator-configurable (config key `maxTokens`, bounds 128..16384, Settings
- * UI in Task 3) because thinking models behind third-party gateways exhaust a
- * fixed budget on reasoning and return an EMPTY body (finish: max-tokens).
- * This constant remains the CODE DEFAULT for unconfigured/plain entries: the
- * runtime falls back to it, so default behavior (and every existing 768 pin)
- * is unchanged.
- */
-export const ADVISOR_MAX_TOKENS = 768
-
-/**
  * One extracted note's length cap (qc3 F-2 / qc2 S-1): a verbose/rogue advisor
  * reply must not inject an unbounded user-role message into the primary
- * session (the token budget is now matched to this cap — 768). Truncated with
- * a '…' marker. The KD-I2 prose fallback note is capped by the same bound —
- * a raised generation budget must not enlarge the injection surface.
+ * session. Truncated with a '…' marker. The KD-I2 prose fallback note is
+ * capped by the same bound.
+ *
+ * Supersession note (2026-10-18 user ruling, retiring the KD-I1/KD-6/KD-2
+ * budget chain): the model-side token budget (`maxTokens`, the former
+ * `ADVISOR_MAX_TOKENS` = 768) is REMOVED entirely — on OpenAI-compatible
+ * APIs `max_tokens` caps reasoning + content together, so with thinking
+ * models the budget intermittently starved the final content (empty reply →
+ * EMPTY_RESPONSE → misclassified transient → silent delta drops). This cap
+ * at extraction is now the ONLY output bound: how much the model thinks or
+ * writes is the model's business (thinking blocks are discarded); what gets
+ * injected into the primary session is bounded here. Latency stays bounded
+ * by the 60 s call deadline (`callTimeoutMs`).
  */
 export const ADVISOR_NOTE_MAX_CHARS = 768
 
@@ -269,9 +247,10 @@ function* balancedObjects(text: string): Generator<string> {
  * `nit`. A reply with no parseable frame returns `undefined` — the caller
  * drops + logs, and there is NO retry for parse failures (the retry budget is
  * reserved for transport errors, KD-2). The note is capped at
- * {@link ADVISOR_NOTE_MAX_CHARS} with a '…' marker (qc3 F-2 — the 20x token
- * budget must not translate into an unbounded injection into the primary
- * session). Never throws.
+ * {@link ADVISOR_NOTE_MAX_CHARS} with a '…' marker (qc3 F-2 — a rogue reply
+ * must not translate into an unbounded injection into the primary session;
+ * since the 2026-10-18 ruling this cap is the ONLY output bound). Never
+ * throws.
  */
 export function extractAdviceNote(reply: string): AdviceNote | undefined {
   for (const frame of balancedObjects(reply)) {
@@ -316,8 +295,8 @@ const SURROUNDING_FENCE_PATTERN = /^```[^\n]*\n([\s\S]*?)\n?```$/
  * Cleanup: trim → strip ONE surrounding markdown fence (an unterminated or
  * non-surrounding fence is kept as-is) → cap at {@link ADVISOR_NOTE_MAX_CHARS}
  * with a '…' marker (the same injection bound as {@link extractAdviceNote} —
- * a raised generation budget must not enlarge the primary session's injection
- * surface). An empty result (whitespace-only reply, fence-only reply) is NOT
+ * the only output bound). An empty result (whitespace-only reply, fence-only
+ * reply) is NOT
  * prose: the caller classifies it as an EMPTY drop (KD-I3), never as an
  * unparsed/prose case. Severity is always `nit` — prose carries no structured
  * severity. Never throws.
@@ -338,7 +317,7 @@ export function extractProseFallbackNote(reply: string): AdviceNote | undefined 
 // KD-5 — failure classification
 // ---------------------------------------------------------------------------
 
-type FailureClass = 'transient' | 'quota' | 'permanent'
+type FailureClass = 'transient' | 'quota' | 'permanent' | 'empty'
 
 /**
  * omp's permanent-rejection wording (see the advisor runtime it ports): a
@@ -347,8 +326,19 @@ type FailureClass = 'transient' | 'quota' | 'permanent'
  */
 const PERMANENT_FAILURE_PATTERN = /invalid_request_error|model[_ ]not[_ ]found|is not supported when|does not exist/i
 
-/** Classify one provider failure per KD-5 (quota/rate-limit → pause, permanent → halt). */
+/**
+ * Classify one provider failure per KD-5 (quota/rate-limit → pause, permanent
+ * → halt).
+ *
+ * `EMPTY_RESPONSE` is the empty-reply class (2026-10-18 ruling, superseding
+ * its old transient treatment): the model returned a completed response with
+ * no content — retrying reproduces the same empty completion, so the caller
+ * does NOT retry; it counts into the KD-I3 empty-reply counters and returns
+ * the no-note outcome (visible on `/advisor status` instead of a silent
+ * transient drop).
+ */
 function classifyFailure(failure: LlmFailure): FailureClass {
+  if (failure.code === EMPTY_RESPONSE_CODE) return 'empty'
   if (
     failure.code === QUOTA_EXCEEDED_CODE
     || failure.code === 'RATE_LIMIT'
@@ -442,7 +432,6 @@ export class AdvisorRuntime {
   private readonly provider: string
   private readonly model: string
   private readonly systemPrompt: string
-  private readonly maxTokens: number
   private readonly proseFallback: boolean
   /** Configured effort id, normalized: `undefined` = automatic (smallest declared). */
   private readonly reasoningEffort: string | undefined
@@ -496,7 +485,6 @@ export class AdvisorRuntime {
     this.provider = options.provider
     this.model = options.model
     this.systemPrompt = options.systemPrompt
-    this.maxTokens = options.maxTokens ?? ADVISOR_MAX_TOKENS
     this.proseFallback = options.proseFallback ?? false
     // Empty/whitespace = automatic, identical to an absent option: the config
     // snapshot already normalizes it, and re-checking here keeps a direct
@@ -531,8 +519,10 @@ export class AdvisorRuntime {
 
   /**
    * KD-I3 (issue #102) — replies dropped because the body was empty after
-   * trim (mostly a reasoning model exhausting the token budget). Read-only
-   * status outlet, same style as `pendingCount`/`lastActivity`.
+   * trim, or the call came back `EMPTY_RESPONSE` (the model returned a
+   * completed response with no content — counted here since the 2026-10-18
+   * ruling). Read-only status outlet, same style as
+   * `pendingCount`/`lastActivity`.
    */
   get emptyReplies(): number {
     return this.emptyReplyCount
@@ -687,6 +677,7 @@ export class AdvisorRuntime {
     // update latch resets here, so each processed delta may deliver one note
     // again (spec §6; the reset point is the drain's per-delta boundary).
     this.guard.beginUpdate()
+    let lastFailure: LlmFailure | undefined
     for (let attempt = 0; attempt <= MAX_TRANSIENT_ATTEMPTS; attempt++) {
       if (attempt > 0) {
         if (this.disposed) return { kind: 'aborted' }
@@ -704,11 +695,32 @@ export class AdvisorRuntime {
           this.state = 'halted'
           this.logger.warn('advisor: permanent model error — halted', { failure: result.failure })
           return { kind: 'halt' }
+        case 'empty':
+          // EMPTY_RESPONSE is NOT transient (2026-10-18): retrying would
+          // reproduce the same empty completion. Count it into the KD-I3
+          // empty-reply counters and return the no-note outcome — the drop
+          // becomes visible on `/advisor status` instead of riding the
+          // transient retry-and-drop path.
+          this.recordEmptyReply(undefined, result.failure)
+          return { kind: 'no-note' }
         case 'transient':
+          // Failure visibility (2026-10-18): every failed attempt is logged
+          // with the failure's code/message — warn on the first attempt,
+          // debug on the retry — so the failure class is diagnosable beyond
+          // the terminal drop line.
+          lastFailure = result.failure
+          if (attempt === 0) {
+            this.logger.warn('advisor: model call failed — retrying', { code: result.failure.code, message: result.failure.message })
+          } else {
+            this.logger.debug('advisor: model call failed — retry exhausted', { code: result.failure.code, message: result.failure.message })
+          }
           break // retry once (the loop's next iteration)
       }
     }
-    this.logger.warn('advisor: dropping delta after transient failures', { attempts: MAX_TRANSIENT_ATTEMPTS + 1 })
+    this.logger.warn('advisor: dropping delta after transient failures', {
+      attempts: MAX_TRANSIENT_ATTEMPTS + 1,
+      ...(lastFailure === undefined ? {} : { code: lastFailure.code, message: lastFailure.message }),
+    })
     return { kind: 'drop' }
   }
 
@@ -779,8 +791,9 @@ export class AdvisorRuntime {
     // stop | max-tokens | tool-calls: extract from the collected text (KD-2;
     // no retry on parse failures — the frame must simply be absent/valid).
     // KD-I3 drop classification (issue #102): an EMPTY trimmed reply is an
-    // empty drop (the classic case is a thinking model exhausting the token
-    // budget — finish: max-tokens); a reply with text but no parseable frame
+    // empty drop (the completed-but-no-content class; the model-side token
+    // budget that used to starve it is gone — 2026-10-18 ruling); a reply
+    // with text but no parseable frame
     // is an unparsed drop unless the opt-in prose fallback rescues it. Both
     // classes are counted with a timestamp and warn once per runtime, so
     // "the advisor is running but never speaks" is discoverable instead of
@@ -834,21 +847,28 @@ export class AdvisorRuntime {
 
   /**
    * KD-I3: count + timestamp an EMPTY-reply drop and warn ONCE per runtime
-   * with the fix hint (raise the budget); repeats fall back to a debug line.
-   * The finish reason rides along — `max-tokens` vs `stop` is the
-   * budget-exhausted vs genuinely-empty tell (issue #102 evidence).
+   * with the condition hint; repeats fall back to a debug line. Two sources
+   * feed the SAME counters (2026-10-18 ruling): a completed stream whose
+   * trimmed body is empty (the finish reason rides along — `max-tokens` vs
+   * `stop` is the budget-vs-genuinely-empty tell), and an `EMPTY_RESPONSE`
+   * failure (the model returned a completed response with no content — never
+   * retried; the failure detail rides along instead of a finish reason).
    */
-  private recordEmptyReply(finish: FinishReason): void {
+  private recordEmptyReply(finish?: FinishReason, failure?: LlmFailure): void {
     this.emptyReplyCount++
     this.lastEmptyReplyTimestamp = Date.now()
+    const detail = {
+      ...(finish === undefined ? {} : { finish: finish.kind }),
+      ...(failure === undefined ? {} : { code: failure.code, message: failure.message }),
+    }
     if (this.emptyReplyWarned) {
-      this.logger.debug('advisor: empty reply dropped', { finish: finish.kind })
+      this.logger.debug('advisor: empty reply dropped', detail)
       return
     }
     this.emptyReplyWarned = true
     this.logger.warn(
-      'advisor: empty reply dropped — reasoning may be exhausting the token budget; consider raising maxTokens',
-      { finish: finish.kind },
+      'advisor: empty reply dropped — the model returned a completed response with no content',
+      detail,
     )
   }
 
@@ -893,14 +913,13 @@ export class AdvisorRuntime {
       // UNSUPPORTED_REASONING_EFFORT, silently killing the advisor for
       // non-deepseek models — pre-n4 these worked because no effort was sent).
       ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-      // Token budget (KD-I1, issue #102): operator-configurable via the
-      // config key `maxTokens` (128..16384) — KD-6's code invariant was
-      // superseded because thinking models behind third-party gateways can
-      // exhaust a fixed budget on reasoning and return an empty body. The
-      // default stays the user-directed 768 (ADVISOR_MAX_TOKENS — see its
-      // supersession chain: 256 -> 5120 -> 768), so unconfigured runtimes
-      // behave exactly as before.
-      maxTokens: this.maxTokens,
+      // NO `maxTokens` (2026-10-18 user ruling, superseding the KD-I1 chain):
+      // on OpenAI-compatible APIs max_tokens caps reasoning + content
+      // TOGETHER, so with thinking models a budget intermittently starved
+      // the final content (empty reply → EMPTY_RESPONSE → silent drops).
+      // The adapter/model default applies; the only output bound is the
+      // extraction-side cap ADVISOR_NOTE_MAX_CHARS, and latency stays
+      // bounded by the call deadline.
       signal,
       // KD-5: `purpose` is a closed union ('compaction' | 'session-title'); an
       // advisor call is an ordinary conversation request and leaves it unset.
