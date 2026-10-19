@@ -11,7 +11,25 @@
  * standard interactive hover wash), and the whole row is one click target
  * that runs the same gated fill as ArrowRight. */
 
-/* The tip row: ~28px tall, single line, entirely clickable. */
+/* Stretch the host's fit-content dock to the composer column so the tip can
+   bookend its left edge. The host dock is a fit-content flex item (no width
+   of its own) centered by its column parent, so it is exactly as wide as its
+   content; `[data-composer-dock]` is the host's stable data attribute (not a
+   hashed class). `width: 100%` claims the whole row, and `max-width` pins it
+   to the host's own composer-column token: the card is `width: 100%` clamped
+   by `--dsh-composer-card-max-width`, so without the cap a pane wider than
+   the column would park the tip at the PANE edge instead of the card edge.
+   Both names are host-owned; if a future host drops either, this degrades to
+   today's centered fit-content row - no crash, just centering. */
+:global([data-composer-dock]) {
+  width: 100%;
+  max-width: var(--dsh-composer-card-max-width);
+}
+
+/* The tip row: ~28px tall, single line, entirely clickable.
+   `margin-right: auto` pushes the tip to the row's left edge; the host's
+   ContextMeter (when it shares the row) keeps the remaining space on the
+   right. */
 .tip {
   display: flex;
   align-items: center;
@@ -23,6 +41,7 @@
      host dock stacks entries tight (the host dock already pulls itself up
      with a negative bottom margin over the stack gap). */
   margin-top: 2px;
+  margin-right: auto;
   padding: 0 8px;
   border-radius: var(--dsw-radius-md);
   font-size: 12px;
