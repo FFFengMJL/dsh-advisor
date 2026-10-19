@@ -528,6 +528,11 @@ describe('shaping (contract 5)', () => {
     // C0 control characters (qc2 F-003): NUL-range and ESC/BS are stripped,
     // while whitespace C0 (\r) survives as the collapsed single space.
     ['fix\x1B[31mthe\x08\rbug', 'fix[31mthe bug'],
+    // Bidi/zero-width marks (security-hygiene lead): direction overrides
+    // (U+202A–U+202E), isolates (U+2066–U+2069), zero-width characters
+    // (U+200B–U+200F) and the BOM (U+FEFF) are stripped invisibly — the
+    // visible text and single-space shaping stay intact.
+    ['pre\u202Ae\u2066x\u200Bt\u200E and \u200F\uFEFFship it', 'preext and ship it'],
     // Truncation lands on a code-point boundary: 119 ASCII + one rocket is
     // exactly 120 code points (121 UTF-16 units) — kept whole, where a
     // unit-boundary slice would store the rocket's lone high surrogate.

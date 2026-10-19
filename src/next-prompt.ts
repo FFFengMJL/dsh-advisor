@@ -124,8 +124,20 @@ const SURROUNDING_FENCE_PATTERN = /^```[^\n]*\n([\s\S]*?)\n?```$/
 const C0_CONTROL_PATTERN = /[\u0000-\u0008\u000E-\u001F]/g
 
 /**
+ * Unicode bidi and zero-width marks (PR-review security-hygiene lead): the
+ * direction embedding/override characters (U+202A–U+202E), the bidi isolates
+ * (U+2066–U+2069), the zero-width characters (U+200B–U+200F — ZWSP, ZWNJ,
+ * ZWJ, LRM, RLM) and U+FEFF (BOM / zero-width no-break space). All render
+ * invisibly, so a crafted reply could flip or disguise the displayed
+ * suggestion text while every visible character still reads as intended —
+ * they are stripped before shaping.
+ */
+const INVISIBLE_MARK_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g
+
+/**
  * Shape one predictor reply into the stored single-line suggestion (contract
- * 5): strip C0 control characters (keeping whitespace) → trim → strip ONE
+ * 5): strip C0 control characters (keeping whitespace) and Unicode bidi /
+ * zero-width marks → trim → strip ONE
  * surrounding code fence → strip ONE layer of surrounding quotes/backticks →
  * collapse every whitespace run (newlines included) to single spaces → reject
  * the empty result and the literal `NONE` (the "nothing predictable" marker
@@ -135,7 +147,7 @@ const C0_CONTROL_PATTERN = /[\u0000-\u0008\u000E-\u001F]/g
  * `undefined` for a dropped reply. Never throws.
  */
 function shapeNextPrompt(raw: string): string | undefined {
-  let text = raw.replace(C0_CONTROL_PATTERN, '').trim()
+  let text = raw.replace(C0_CONTROL_PATTERN, '').replace(INVISIBLE_MARK_PATTERN, '').trim()
   const fence = SURROUNDING_FENCE_PATTERN.exec(text)
   if (fence !== null) text = fence[1]!.trim()
   if (text.length >= 2) {
