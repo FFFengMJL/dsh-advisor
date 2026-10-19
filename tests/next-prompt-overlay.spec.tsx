@@ -1,27 +1,28 @@
 // @vitest-environment jsdom
 /**
- * Next-prompt ghost suggestion overlay (plan dsh-advisor-next-prompt-n12,
- * task 3) — component behavior over a scripted wire face, mirroring the
- * advisor-session-action spec (preloaded stores + @testing-library/react;
- * the dev-time `bindSnapshotSelector` stand-in reads the current snapshot per
- * render, so assertions after a store mutation re-render explicitly).
+ * Next-prompt suggestion dock tip (plan dsh-advisor-next-prompt-n12 task 3;
+ * dock-tip rework plan dsh-advisor-next-prompt-e2e-n13) — component behavior
+ * over a scripted wire face, mirroring the advisor-session-action spec
+ * (preloaded stores + @testing-library/react; the dev-time
+ * `bindSnapshotSelector` stand-in reads the current snapshot per render, so
+ * assertions after a store mutation re-render explicitly).
  *
- * The occupant registers into the shell-declared `conversation.input.overlay`
- * list slot, which the resident composer renders inside its card
- * (`div[data-composer-card]`, the overlay anchor's parent) — that marker is
- * the fill-target boundary: a keydown whose target sits inside the SAME
- * composer card is the composer's own editor (the fill target); an
+ * The occupant registers into the shell-declared `conversation.composer.dock`
+ * list slot, which the host renders inside `div[data-composer-dock]` — a
+ * SIBLING of `div[data-composer-card]`, below the card — so the tests mount
+ * that real geometry (card and tip side by side). The card marker is the
+ * fill-target boundary: a keydown whose target sits inside the composer card
+ * is the composer's own editor (the fill target); an
  * input/textarea/contenteditable elsewhere keeps native semantics.
  *
  * Contract under test (brief behavior contract, one case per bullet):
- * ① render gate: ghost renders ONLY when suggestion !== null && draft === ''
+ * ① render gate: tip renders ONLY when suggestion !== null && draft === ''
  *    && phase === 'plain'; otherwise nothing renders, and a fill attempt
  *    intercepts nothing (the fill handler re-validates this gate — see ③).
- * ② ghost presentation: the suggestion text renders, plus the "→" badge —
- *    an `role="img"` span (I-000027) whose accessible name is
- *    `t('nextPromptBadge')`, matching the ArrowRight accept gesture. The
- *    ghost CONTAINER is a `role="status"` live region (aria-live polite),
- *    so the suggestion's arrival is announced without focus (round 2).
+ * ② tip presentation: the localized prefix, the suggestion text, and the
+ *    accept control render on one row (the ✦ glyph is presentational). The
+ *    row is a `role="status"` live region (aria-live polite), so the
+ *    suggestion's arrival is announced without focus.
  * ③ ArrowRight fill: a document-level capture-phase keydown intercepts ONLY
  *    a bare ArrowRight (no modifiers) whose target is the no-focus surface
  *    (document/body — nothing focused) or inside the composer card; a
@@ -30,7 +31,7 @@
  *    the latest input snapshot (the commit→passive-effect window must not
  *    fill over user-typed text). On intercept: preventDefault +
  *    inputActions.setDraft(suggestion).
- * ④ fill clears local state optimistically (suggestion → null) so the ghost
+ * ④ fill clears local state optimistically (suggestion → null) so the tip
  *    disappears the moment the draft fills.
  * ⑤ fetch points: mount; every consumed refresh-signal epoch bump; and the
  *    30 s idle poll that runs ONLY while idle (fake-timer case proves the
@@ -39,11 +40,11 @@
  *    nothing, no retry storm — the next signal (or scheduled poll) is the
  *    next attempt. A contract-violating PRIMITIVE payload settles
  *    `unavailable` the same way (never an unhandled TypeError — round 2).
- * ⑦ badge click-to-fill (opaque-fusion follow-up, e2e-n13): clicking the →
- *    badge routes through the SAME gated fill path as ArrowRight —
+ * ⑦ row click-to-fill (dock-tip rework): clicking ANYWHERE on the tip row
+ *    routes through the SAME gated fill path as ArrowRight —
  *    setDraft(suggestion) + optimistic clear; once the render gate is
- *    violated (non-empty draft) the clickable badge is gone with the ghost
- *    and a click is a no-op (no fill, nothing consumed).
+ *    violated (non-empty draft) the row is gone and a click is a no-op
+ *    (no fill, nothing consumed).
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -148,38 +149,48 @@ function harness(): Harness {
   return { rpc, epoch, input, controller, setDraft, props }
 }
 
-/** The composer-card wrapper the host renders the overlay anchor inside. */
-function ComposerCard(props: { children: React.ReactNode }): React.ReactNode {
-  return <div data-composer-card="true">{props.children}</div>
+/**
+ * The real dock geometry: the composer card (`div[data-composer-card]`,
+ * optionally holding the editor / other card content) and the dock container
+ * (`div[data-composer-dock]`) as siblings — the tip renders BELOW the card,
+ * outside it.
+ */
+function ComposerStack(props: { card?: React.ReactNode; children: React.ReactNode }): React.ReactNode {
+  return (
+    <div>
+      <div data-composer-card="true">{props.card}</div>
+      <div data-composer-dock="true">{props.children}</div>
+    </div>
+  )
 }
 
 const SUGGESTION = 'Try the /advisor command'
 
-/** Render + settle one suggestion so the ghost is on screen (cases ①–④). */
+/** Render + settle one suggestion so the tip is on screen (cases ①–④). */
 async function mountWithSuggestion(h: Harness): Promise<ReturnType<typeof render>> {
   const view = render(
-    <ComposerCard>
+    <ComposerStack>
       <NextPromptOverlay {...h.props} />
-    </ComposerCard>,
+    </ComposerStack>,
   )
   await waitFor(() => expect(h.rpc.calls).toHaveLength(1))
   h.rpc.settle(ok({ suggestion: SUGGESTION }))
   await waitFor(() => expect(h.controller.store.getSnapshot().status).toBe('ready'))
   view.rerender(
-    <ComposerCard>
+    <ComposerStack>
       <NextPromptOverlay {...h.props} />
-    </ComposerCard>,
+    </ComposerStack>,
   )
   return view
 }
 
-describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)', () => {
+describe('next-prompt dock tip (plan dsh-advisor-next-prompt-n12, task 3; dock-tip rework e2e-n13)', () => {
   it('fetches the suggestion on mount through /api/advisor/suggestion', async () => {
     const h = harness()
     render(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     await waitFor(() => expect(h.rpc.calls).toHaveLength(1))
     expect(h.rpc.last()).toEqual({
@@ -189,37 +200,38 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     })
   })
 
-  it('renders the ghost text and the → badge (named img) when a suggestion waits on an empty plain draft', async () => {
+  it('renders the prefix, the suggestion text, and the accept control when a suggestion waits on an empty plain draft', async () => {
     const h = harness()
     await mountWithSuggestion(h)
+    // Row copy: localized prefix + colon, the suggestion, the accept
+    // affordance — one line under the card.
+    expect(screen.getByText(`${en.nextPromptPrefix}:`)).toBeTruthy()
     expect(screen.getByText(SUGGESTION)).toBeTruthy()
-    // The badge exposes its accessible name through role="img" (a role-less
-    // generic span never announces its aria-label — I-000027), and the glyph
-    // matches the ArrowRight gesture and copy (I-000028).
-    const badge = screen.getByRole('img', { name: en.nextPromptBadge })
-    expect(badge.textContent).toContain('→')
-    // The ghost CONTAINER is the live region (round 2): the suggestion is
-    // announced politely when it arrives, without ever taking focus.
+    expect(screen.getByText(en.nextPromptAccept)).toBeTruthy()
+    // The leading glyph is presentational (aria-hidden) — the live region's
+    // text is the announcement, the glyph is decoration.
+    expect(screen.getByText('✦').getAttribute('aria-hidden')).toBe('true')
+    // The tip ROW is the live region: the suggestion is announced politely
+    // when it arrives, without ever taking focus.
     const live = screen.getByRole('status')
-    expect(live.textContent).toContain(SUGGESTION)
     expect(live.getAttribute('aria-live')).toBe('polite')
+    expect(live.textContent).toContain(SUGGESTION)
   })
 
-  it('carries the ghost module class on the visible ghost container (opaque-fusion backdrop host)', async () => {
+  it('carries the tip module class on the visible tip row', async () => {
     const h = harness()
     const view = await mountWithSuggestion(h)
-    // Opaque fusion (e2e-n13 F-1): the backdrop covering the host placeholder
-    // is styled on the ghost CONTAINER in next-prompt.module.css, so the
-    // element on screen must actually carry that module class — only then do
-    // the opaque background and clearance padding apply while visible.
-    expect(typeof styles.ghost).toBe('string')
-    expect(screen.getByRole('status').className).toContain(styles.ghost)
-    // Gate-bound: once the render gate breaks, no container exists to carry it.
+    // The one-line tip is styled by next-prompt.module.css on the ROW, so
+    // the element on screen must actually carry that module class — only
+    // then do the flex layout, ellipsis, and hover styles apply.
+    expect(typeof styles.tip).toBe('string')
+    expect(screen.getByRole('status').className).toContain(styles.tip)
+    // Gate-bound: once the render gate breaks, no row exists to carry it.
     h.input.update((s) => { s.draft = 'typed' })
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     expect(screen.queryByRole('status')).toBeNull()
   })
@@ -228,24 +240,24 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     const h = harness()
     const view = await mountWithSuggestion(h)
 
-    // A non-empty draft: no ghost, and the keydown listener is unmounted —
+    // A non-empty draft: no tip, and the keydown listener is unmounted —
     // a bare ArrowRight keeps its native semantics (nothing prevented).
     h.input.update((s) => { s.draft = 'partial' })
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     expect(screen.queryByText(SUGGESTION)).toBeNull()
     expect(fireEvent.keyDown(document, { key: 'ArrowRight' })).toBe(true)
     expect(h.setDraft).not.toHaveBeenCalled()
 
-    // Back to an empty draft but a claimed phase: still no ghost.
+    // Back to an empty draft but a claimed phase: still no tip.
     h.input.update((s) => { s.draft = ''; s.phase = 'claimed' })
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     expect(screen.queryByText(SUGGESTION)).toBeNull()
     expect(fireEvent.keyDown(document, { key: 'ArrowRight' })).toBe(true)
@@ -262,50 +274,52 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     expect(h.setDraft).toHaveBeenCalledWith(SUGGESTION)
     expect(event.defaultPrevented).toBe(true)
     // The optimistic clear: the store suggestion is null immediately, so the
-    // ghost disappears the moment the draft fills (no ghost on the next render).
+    // tip disappears the moment the draft fills (no tip on the next render).
     await waitFor(() => expect(h.controller.store.getSnapshot().suggestion).toBeNull())
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     expect(screen.queryByText(SUGGESTION)).toBeNull()
   })
 
-  it('fills the draft when the badge is clicked and clears the suggestion optimistically', async () => {
+  it('fills the draft when the tip row is clicked and clears the suggestion optimistically', async () => {
     const h = harness()
     const view = await mountWithSuggestion(h)
 
-    // Badge click-to-fill (⑦): the click routes through the SAME gated fill
-    // path as ArrowRight — setDraft(suggestion), then the optimistic clear.
-    fireEvent.click(screen.getByRole('img', { name: en.nextPromptBadge }))
+    // Row click-to-fill (⑦): a click ANYWHERE on the row routes through the
+    // SAME gated fill path as ArrowRight — setDraft(suggestion), then the
+    // optimistic clear. Click on the row itself (not a nested control — the
+    // accept control is a passive affordance).
+    fireEvent.click(screen.getByRole('status'))
     expect(h.setDraft).toHaveBeenCalledTimes(1)
     expect(h.setDraft).toHaveBeenCalledWith(SUGGESTION)
     await waitFor(() => expect(h.controller.store.getSnapshot().suggestion).toBeNull())
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     expect(screen.queryByText(SUGGESTION)).toBeNull()
   })
 
-  it('makes a badge click a no-op once the render gate is violated (non-empty draft)', async () => {
+  it('makes a click a no-op once the render gate is violated (the tip is gone)', async () => {
     const h = harness()
     const view = await mountWithSuggestion(h)
 
-    // The gate breaks (the user typed): the ghost — and its clickable badge —
-    // leaves the DOM with it, so the click surface no longer exists. Any
-    // click landing where the badge used to be is a plain no-op: no fill,
+    // The gate breaks (the user typed): the row leaves the DOM with it, so
+    // the click surface no longer exists. Any click landing where the tip
+    // used to be — or on the composer card — is a plain no-op: no fill,
     // nothing consumed (⑦ violated-gate case; a click carries no
     // preventDefault contract).
     h.input.update((s) => { s.draft = 'user-typed' })
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
-    expect(screen.queryByRole('img', { name: en.nextPromptBadge })).toBeNull()
+    expect(screen.queryByRole('status')).toBeNull()
     fireEvent.click(view.container.querySelector('[data-composer-card]')!)
     expect(h.setDraft).not.toHaveBeenCalled()
     expect(h.controller.store.getSnapshot().suggestion).toBe(SUGGESTION)
@@ -337,19 +351,17 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
   it('keeps native ArrowRight on a focused button outside the card, and still fills for a target inside it', async () => {
     const h = harness()
     const view = render(
-      <ComposerCard>
-        <button data-testid="card-button" />
+      <ComposerStack card={<button data-testid="card-button" />}>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     await waitFor(() => expect(h.rpc.calls).toHaveLength(1))
     h.rpc.settle(ok({ suggestion: SUGGESTION }))
     await waitFor(() => expect(h.controller.store.getSnapshot().status).toBe('ready'))
     view.rerender(
-      <ComposerCard>
-        <button data-testid="card-button" />
+      <ComposerStack card={<button data-testid="card-button" />}>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
 
     // A focused plain button OUTSIDE the card keeps its native ArrowRight
@@ -381,9 +393,9 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     // pass the key through — no preventDefault, no fill, nothing consumed.
     h.input.update((s) => { s.draft = 'user-typed' })
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     expect(screen.queryByText(SUGGESTION)).toBeNull()
     const stale = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
@@ -396,9 +408,9 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     // above came from the re-validated gate, not from a missing listener.
     h.input.update((s) => { s.draft = '' })
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     const fill = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
     document.dispatchEvent(fill)
@@ -408,22 +420,20 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
 
   it('treats the composer card editor as the fill target (a keydown inside the card intercepts)', async () => {
     const h = harness()
-    // The editor element sits INSIDE the same composer card as the overlay
-    // anchor — exactly where the host mounts the composer's own editor.
+    // The editor element sits INSIDE the composer card while the tip renders
+    // in the dock BELOW it — exactly where the host mounts them.
     const view = render(
-      <ComposerCard>
-        <div contentEditable data-testid="editor" />
+      <ComposerStack card={<div contentEditable data-testid="editor" />}>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     await waitFor(() => expect(h.rpc.calls).toHaveLength(1))
     h.rpc.settle(ok({ suggestion: SUGGESTION }))
     await waitFor(() => expect(h.controller.store.getSnapshot().status).toBe('ready'))
     view.rerender(
-      <ComposerCard>
-        <div contentEditable data-testid="editor" />
+      <ComposerStack card={<div contentEditable data-testid="editor" />}>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     expect(fireEvent.keyDown(screen.getByTestId('editor'), { key: 'ArrowRight' })).toBe(false)
     expect(h.setDraft).toHaveBeenCalledTimes(1)
@@ -433,9 +443,9 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
   it('refetches on every consumed refresh-signal epoch bump, idempotently per epoch', async () => {
     const h = harness()
     const view = render(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     await waitFor(() => expect(h.rpc.calls).toHaveLength(1))
     h.rpc.settle(ok({ suggestion: null }))
@@ -443,9 +453,9 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
 
     // Rerenders without a bump never refetch (the epoch is consumed once).
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     expect(h.rpc.calls).toHaveLength(1)
 
@@ -453,9 +463,9 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     // exactly one new fetch for the new epoch.
     h.epoch.update((s) => { s.epoch += 1 })
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     await waitFor(() => expect(h.rpc.calls).toHaveLength(2))
     expect(h.rpc.last().method).toBe('advisor/suggestion')
@@ -466,9 +476,9 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     const h = harness()
     h.rpc.auto = true
     const view = render(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     // Mount fetch flushed (advanceTimersByTimeAsync awaits the settled
     // microtasks — testing-library's waitFor never runs under fake timers).
@@ -482,15 +492,15 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     await vi.advanceTimersByTimeAsync(NEXT_PROMPT_IDLE_POLL_MS)
     expect(h.rpc.calls).toHaveLength(3)
 
-    // The next poll's reply carries a suggestion: the ghost appears and the
+    // The next poll's reply carries a suggestion: the tip appears and the
     // poll timer is CLEARED — no further ticks while the suggestion waits.
     h.rpc.reply = ok({ suggestion: SUGGESTION })
     await vi.advanceTimersByTimeAsync(NEXT_PROMPT_IDLE_POLL_MS)
     expect(h.controller.store.getSnapshot().suggestion).toBe(SUGGESTION)
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     expect(h.rpc.calls).toHaveLength(4)
     await vi.advanceTimersByTimeAsync(NEXT_PROMPT_IDLE_POLL_MS * 2)
@@ -500,17 +510,17 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
   it('maps a failure to unavailable: renders nothing with no retry storm until the next signal', async () => {
     const h = harness()
     const view = render(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     await waitFor(() => expect(h.rpc.calls).toHaveLength(1))
     h.rpc.settle(ok({ error: { tag: 'advisor/unavailable', message: 'no suggestion face on this host' } }))
     await waitFor(() => expect(h.controller.store.getSnapshot().status).toBe('unavailable'))
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     // Nothing renders for an unavailable surface.
     expect(view.container.textContent).toBe('')
@@ -521,16 +531,16 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     // No retry storm: rerenders (and the settled failure itself) never
     // trigger a new fetch — only the next consumed signal does.
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     expect(h.rpc.calls).toHaveLength(1)
     h.epoch.update((s) => { s.epoch += 1 })
     view.rerender(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     await waitFor(() => expect(h.rpc.calls).toHaveLength(2))
   })
@@ -541,9 +551,9 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     // guards with typeof/null instead of throwing on `'suggestion' in x`.
     const h = harness()
     render(
-      <ComposerCard>
+      <ComposerStack>
         <NextPromptOverlay {...h.props} />
-      </ComposerCard>,
+      </ComposerStack>,
     )
     await waitFor(() => expect(h.rpc.calls).toHaveLength(1))
     h.rpc.settle(ok(42 as unknown))

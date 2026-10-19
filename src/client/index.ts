@@ -267,31 +267,36 @@ export function apply(ctx: ClientContext): void {
     }, AdvisorSessionAction)
   })
 
-  // T3 (plan dsh-advisor-next-prompt-n12): the next-prompt ghost suggestion
-  // in the resident composer — the session-scoped occupant of the
-  // shell-declared `conversation.input.overlay` list slot (rendered by the
-  // composer INSIDE its card, so the overlay's fill target boundary is that
-  // card). Same generator + `yield` shape as the B2 session action; the
-  // inject factory builds ONE AdvisorSuggestionController per session scope
-  // binding (the renderer memoizes the face per entry × binding, so every
-  // fetch carries its own sessionId), and the refresh signals ride the SAME
-  // epoch plane registered above (connection/reset + window focus) — no new
-  // push-event contract. The component reads the composer's input machine
-  // through SessionStandardProps (draft/phase gate + inputActions.setDraft).
-  ctx.slots.inject('conversation.input.overlay', function* () {
+  // T3 + e2e-n13 rework: the next-prompt suggestion tip — the session-scoped
+  // occupant of the shell-declared `conversation.composer.dock` list slot
+  // ("ambient entries below the composer card": the host renders the dock
+  // container — `div[data-composer-dock]` — as a SIBLING of the composer
+  // card, so the tip sits under the card with zero overlap with the
+  // placeholder, the attachments row, or the card geometry; the previous
+  // `conversation.input.overlay` seat rendered INSIDE the card and its
+  // in-composer overlay form fought the host composer — three rounds of
+  // fusion patches proved it). Same generator + `yield` shape as the B2
+  // session action; the inject factory builds ONE AdvisorSuggestionController
+  // per session scope binding (the renderer memoizes the face per entry ×
+  // binding, so every fetch carries its own sessionId), and the refresh
+  // signals ride the SAME epoch plane registered above (connection/reset +
+  // window focus) — no new push-event contract. The component reads the
+  // composer's input machine through SessionStandardProps (draft/phase gate +
+  // inputActions.setDraft).
+  ctx.slots.inject('conversation.composer.dock', function* () {
     yield ctx.slots.register({
-      name: 'conversation.input.overlay',
+      name: 'conversation.composer.dock',
       // List slot: one cell per `id` — this bundle contributes exactly one
-      // overlay occupant; default order keeps registration sequencing.
+      // ambient entry; default order keeps registration sequencing.
       id: BUNDLE_NAME,
       locale: NS,
       inject: (sessionId: string) => {
-        const overlayController = new AdvisorSuggestionController(sessionId, connection.rpc)
+        const tipController = new AdvisorSuggestionController(sessionId, connection.rpc)
         return {
           sessionId,
-          controller: overlayController,
+          controller: tipController,
           hooks: {
-            snapshot: overlayController.store,
+            snapshot: tipController.store,
             refreshSignal,
           },
         }
