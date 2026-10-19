@@ -88,6 +88,8 @@ In a **dsh-tui** profile, `/advisor config` additionally reads back the composed
 
 On the **web**, the same session model controls ride the session header's **Advisor action** (requires a dsh web build whose shell declares the `conversation.session.header.actions` slot — dsh ≥ 0.1.7-rc.1). The action is bound to the session it sits on: it shows the effective reviewer pair, its source (`session override` / `global default`), and the live-session lifetime; **Pin this model** pins a provider + model for that session, and **Use global default** drops the pin (the reset path). It writes ONLY through the plugin's session endpoints (`/api/advisor/getSession` + `/api/advisor/setSessionModel`) — the same controller, validation, and fencing as `/advisor model`, never the persisted config — and it never falls back to the global config write when the session surface is unavailable. The control refreshes when you open it (plus on reconnect/focus while open); there is no background polling. The global card on the Plugins page stays global-only.
 
+![Session header Advisor action popover showing the effective reviewer pair, its source, and the pin controls](docs/screenshots/advisor-session-action.webp)
+
 ## Features
 
 - **Independent reviewer per session**: a separate model call observes the primary transcript and reviews each stepped primary turn; advisor messages are excluded from later deltas, so the advisor does not read its own advice back. The exclusion recognizes the advisor's current producer kind (`advisor`) AND both historical shapes a still-openable log can carry: the prehistoric direct `{ kind: 'advisor' }` note and the 0.1.6-era note as the V3→V4 in-memory migration rewrote it (`kind: 'plugin:advisor'`) — no generation of persisted notes is orphaned by the identity migration.
@@ -102,6 +104,8 @@ On the **web**, the same session model controls ride the session header's **Advi
 - **No-stall failure policy**: a failing or quota-limited advisor only drops its own bounded backlog — it can never park or pollute the primary loop.
 - **Session-scoped controls**: `/advisor on|off|status|config|model` work per session; the toggles and the per-session model pin are ephemeral overrides, never persisted config — `/advisor config` always reports the global defaults. On the web, the session header's **Advisor action** drives the same per-session pin through dedicated session endpoints (see [Verify](#verify)).
 - **Next-prompt suggestion (web only)**: after each completed turn the advisor makes one best-effort prediction of the user's likely next prompt and shows it as a suggestion tip below the web composer — click the tip (or press → with an empty input box) to accept it. Web GUI only (no TUI equivalent); predictions are best-effort and silent on failure. Config: `nextPrompt` (boolean, default on); the off switch is the checkbox on the Advisor config card (web Plugins page).
+
+![Next-prompt suggestion tip below the web composer, with the accept hint](docs/screenshots/advisor-next-prompt-tip.webp)
 
 ![Advisor note injected into the session stream](docs/screenshots/advisor-injected-note.webp)
 
