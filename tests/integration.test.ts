@@ -123,6 +123,10 @@ function fullConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
     systemPrompt: '',
     immuneTurns: 3,
     maxDeltaMessages: 60,
+    // These tests exercise the review/settings/command planes, not the
+    // next-prompt prediction: silence the extra prediction model call
+    // (schema default true) so request sequences keep their pre-T1 shape.
+    nextPrompt: false,
     ...overrides,
   }
 }
