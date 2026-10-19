@@ -253,6 +253,46 @@ export interface AdvisorSessionGatewayFace {
   resetSessionModel(sessionId: string): AdvisorSessionRpcResult
 }
 
+// ---------------------------------------------------------------------------
+// Next-prompt suggestion surface (plan dsh-advisor-next-prompt-n12, T2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Plugin-domain error tags for the READ-ONLY suggestion query
+ * (`advisor/suggestion`), carried in RETURNED DATA like the session tags —
+ * never new RemoteError codes and never a thrown coded failure:
+ *
+ * - `advisor/rejected` — the request is malformed (empty/non-string
+ *   sessionId); nothing was consulted;
+ * - `advisor/unavailable` — this gateway fiber holds no elected owner (no
+ *   suggestion face); the endpoint stays inert rather than guessing.
+ */
+export type AdvisorSuggestionErrorTag =
+  | 'advisor/rejected'
+  | 'advisor/unavailable'
+
+/**
+ * One `advisor/suggestion` result: the stored single-line suggestion
+ * (`suggestion: null` = nothing stored or the feature is off), or a tagged
+ * data error. Read-only: later tasks rely on the endpoint being idempotent
+ * and side-effect-free.
+ */
+export type AdvisorSuggestionRpcResult =
+  | { readonly suggestion: string | null }
+  | { readonly error: { readonly tag: AdvisorSuggestionErrorTag; readonly message: string } }
+
+/**
+ * The elected owner's suggestion face — implemented by the wiring
+ * (`index.ts`) against the SAME `NextPromptManager` the transcript observer
+ * feeds (one state store, no divergence). The gateway consults it lazily per
+ * request, mirroring the `sessionControl` pattern; a gateway on a non-owner
+ * fiber answers `advisor/unavailable` in data and stays inert.
+ */
+export interface AdvisorSuggestionFace {
+  /** The stored suggestion for one session (`{ suggestion: null }` when none). */
+  getSuggestion(sessionId: string): AdvisorSuggestionRpcResult
+}
+
 /**
  * The host-side `advisor` config gateway (`/api/advisor/get` +
  * `/api/advisor/set`). Registered as the cordis service key `'advisor'`
@@ -294,6 +334,13 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * answers the same generic wire message, unlogged.
    */
   private readonly logger: AdvisorGatewayLogger | undefined
+  /**
+   * The elected owner's suggestion face (plan dsh-advisor-next-prompt-n12,
+   * T2), resolved LAZILY per request like `sessionControl`. Absent → the
+   * `/api/advisor/suggestion` endpoint answers `advisor/unavailable` in data
+   * and stays inert.
+   */
+  private readonly suggestionFace: () => AdvisorSuggestionFace | undefined
 
   /**
    * @param ctx - owning context (the plugin fiber's ctx inside `apply`).
@@ -307,6 +354,10 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    *   same reason — the endpoint then reports unavailable, never throws.
    * @param logger - diagnostic sink for the capability lookup's failure detail
    *   (never put on the wire); optional so existing constructions keep working.
+   * @param suggestionFace - lazy access to the elected owner's suggestion
+   *   face (plan dsh-advisor-next-prompt-n12, T2); defaults to "absent" so a
+   *   direct construction without the wiring keeps the suggestion endpoint
+   *   cleanly unavailable.
    */
   constructor(
     ctx: Context,
@@ -314,12 +365,14 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     sessionControl: () => AdvisorSessionGatewayFace | undefined = () => undefined,
     resolveModelInfo?: AdvisorModelInfoResolver,
     logger?: AdvisorGatewayLogger,
+    suggestionFace: () => AdvisorSuggestionFace | undefined = () => undefined,
   ) {
     super(ctx, 'advisor')
     this.bridge = bridge
     this.sessionControl = sessionControl
     this.resolveModelInfo = resolveModelInfo
     this.logger = logger
+    this.suggestionFace = suggestionFace
     // The settings service is optional (no settings → entry fallback). The
     // inject child activates only when a settings service is composed, mirroring
     // installAdvisorSettings' conditional child; the returned disposer mirrors
@@ -398,6 +451,35 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     const validated = parseModelPair(pair.provider, pair.model)
     if (!validated.ok) return advisorSessionError('advisor/rejected', `advisor: ${validated.reason}`)
     return face.setSessionModel(sessionId, validated.provider, validated.model)
+  }
+
+  /**
+   * T2 (plan dsh-advisor-next-prompt-n12) — the READ-ONLY next-prompt
+   * suggestion query (`/api/advisor/suggestion`, args `{ sessionId }`): the
+   * single-line suggestion the manager stored for the session's next turn.
+   * Read-only and side-effect-free (later tasks rely on idempotence) — the
+   * wire method name `suggestion` aliases this implementation member
+   * (`advisorTypertContribution`). Malformed requests answer
+   * `advisor/rejected`; a gateway without an elected owner answers
+   * `advisor/unavailable`. Business outcomes live in the returned data
+   * (plugin-domain tags) — nothing here throws coded failures.
+   */
+  getSuggestion(sessionId: string): AdvisorSuggestionRpcResult {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      return {
+        error: { tag: 'advisor/rejected', message: 'advisor: getSuggestion requires a non-empty sessionId' },
+      }
+    }
+    const face = this.suggestionFace()
+    if (face === undefined) {
+      return {
+        error: {
+          tag: 'advisor/unavailable',
+          message: 'advisor: the suggestion surface is not owned by this gateway — no elected owner on this fiber',
+        },
+      }
+    }
+    return face.getSuggestion(sessionId)
   }
 
   /**
@@ -563,17 +645,25 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         // normalization (config.ts) is mirrored here: a raw empty/blank value
         // must not surface as a present-as-empty key.
         reasoningEffort: raw?.reasoningEffort?.trim() || undefined,
+        // T1 (plan dsh-advisor-next-prompt-n12): the resolved contract types
+        // nextPrompt as a plain boolean — an absent raw key means the schema
+        // default (true; enabled:false already blocks every prediction call).
+        nextPrompt: raw?.nextPrompt ?? true,
         disabledReason: error instanceof Error ? error.message : String(error),
       }
     }
     // typertGateway wire boundary: absent keys are omitted, never
     // present-as-undefined (the result validator rejects undefined values).
-    // The seven persisted keys (qc1 W-1, issue #102; T2 plan
-    // dsh-advisor-reasoning-effort): proseFallback/reasoningEffort
-    // ride the same resolved source — present whenever the resolver defined
-    // them (the schema default fills false on the normal path), omitted
-    // only when the raw entry lacks them and the S1 fallback cannot seed them.
-    // No maxTokens key since the 2026-10-18 ruling (budget removed).
+    // Key census (qc1 W-1, issue #102; T2 plan dsh-advisor-reasoning-effort;
+    // T1 plan dsh-advisor-next-prompt-n12): SEVEN persisted keys
+    // (systemPrompt/immuneTurns/maxDeltaMessages/proseFallback/
+    // reasoningEffort/provider/model) — proseFallback/reasoningEffort ride
+    // the same resolved source, present whenever the resolver defined them
+    // (the schema default fills false on the normal path), omitted only when
+    // the raw entry lacks them and the S1 fallback cannot seed them — plus
+    // THREE non-persisted live fields: `enabled`/`disabledReason` (the gate
+    // state, never stored) and `nextPrompt` (derived, see below). No
+    // maxTokens key since the 2026-10-18 ruling (budget removed).
     const wire: Record<string, unknown> = {
       enabled: config.enabled,
       systemPrompt: config.systemPrompt,
@@ -582,6 +672,10 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     }
     if (config.proseFallback !== undefined) wire.proseFallback = config.proseFallback
     if (config.reasoningEffort !== undefined) wire.reasoningEffort = config.reasoningEffort
+    // T1 (plan dsh-advisor-next-prompt-n12): a derived switch, not a persisted
+    // key — the resolver normalizes nextPrompt to a plain boolean (the schema
+    // default fills true), so it rides every resolved get without a gate.
+    wire.nextPrompt = config.nextPrompt
     if (config.provider !== undefined) wire.provider = config.provider
     if (config.model !== undefined) wire.model = config.model
     if (config.disabledReason !== undefined) wire.disabledReason = config.disabledReason
@@ -669,6 +763,26 @@ export function advisorTypertContribution(): TypertContribution {
         parameters: [
           { name: 'provider', wire: 'provider', source: 'json', codec: { mode: 'src-json' } },
           { name: 'model', wire: 'model', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      // T2 (plan dsh-advisor-next-prompt-n12) — the read-only next-prompt
+      // suggestion query. Same explicit registration, same direct/src-json
+      // dispatch shape; the payload contract stays one plain-object `args`
+      // keyed by parameter name (`suggestion` → `{ args: { sessionId } }`).
+      // The wire method name `suggestion` aliases the implementation member
+      // `getSuggestion` (InvocationDescriptor.implementation), keeping the
+      // endpoint noun-shaped on `/api/advisor/suggestion` while the class
+      // member keeps its accessor-style name. Synchronous, tag-in-data.
+      {
+        id: 'dsh-advisor#advisor/suggestion',
+        service: 'advisor',
+        namespace: 'advisor',
+        method: 'suggestion',
+        implementation: 'getSuggestion',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
         ],
         result: { mode: 'src-json' },
       },

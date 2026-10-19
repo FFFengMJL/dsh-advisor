@@ -60,13 +60,14 @@ import { resolveAdvisorConfig } from './config.js'
 import type { AdvisorConfig, ResolvedAdvisorConfig } from './config.js'
 import { installAdvisorSettings } from './settings.js'
 import { AdvisorConfigGateway, advisorSessionError, advisorTypertContribution } from './gateway.js'
-import type { AdvisorSessionGatewayFace, AdvisorSessionRpcResult } from './gateway.js'
+import type { AdvisorSessionGatewayFace, AdvisorSessionRpcResult, AdvisorSuggestionFace } from './gateway.js'
 import { SessionTranscriptObserver } from './transcript.js'
 import type { Delta } from './transcript.js'
 import { AdvisorRuntime } from './advisor-runtime.js'
 import type { AdviceNote } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
+import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { AdvisorSessionOverrides, registerAdvisorCommands, summarizeSystemPrompt, ADVISOR_MODEL_VALIDATION_TIMEOUT_MS } from './commands.js'
 import type {
@@ -220,9 +221,10 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   const appRootLlm = (): typeof ctx.llm =>
     ((ctx as unknown as { root?: { get?: (k: string) => unknown } }).root?.get?.('llm') as typeof ctx.llm) ?? ctx.llm
   let sessionControl: AdvisorSessionGatewayFace | undefined
+  let suggestionControl: AdvisorSuggestionFace | undefined
   try {
     new AdvisorConfigGateway(ctx, bridge, () => sessionControl, (provider, model, signal) =>
-      appRootLlm().resolveModelInfo(provider, model, signal), ctx.logger('advisor'))
+      appRootLlm().resolveModelInfo(provider, model, signal), ctx.logger('advisor'), () => suggestionControl)
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('advisor').debug('advisor gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
@@ -270,6 +272,10 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       systemPrompt: raw?.systemPrompt ?? '',
       immuneTurns: raw?.immuneTurns ?? 3,
       maxDeltaMessages: raw?.maxDeltaMessages ?? 60,
+      // T1 (plan dsh-advisor-next-prompt-n12): the resolved contract types
+      // nextPrompt as a plain boolean — an absent raw key means the schema
+      // default (true; enabled:false already blocks every prediction call).
+      nextPrompt: raw?.nextPrompt ?? true,
       disabledReason: reason,
     }
   }
@@ -359,6 +365,21 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   })
 
   const runtimes = new Map<string, AdvisorRuntime>()
+  // Next-prompt predictor (plan dsh-advisor-next-prompt-n12, T1): one per
+  // fiber, next to the runtimes map. The gate re-reads the resolver SSOT on
+  // every arm/fire through the SESSION-SCOPED effective config (I-000024 —
+  // `safeEffective` folds in the `/advisor on|off` override and the session
+  // model pin; a global read would let an off session keep predicting and
+  // ignore its pin). The throwing-resolver containment lives in the manager
+  // (qc2 W-1 — a failed read fails closed), the llm seam is the same
+  // app-root service the review calls use, and the prediction chain is fully
+  // decoupled from the review runtimes (no shared state; a failing
+  // prediction drops silently).
+  const suggestions = new NextPromptManager({
+    resolve: (sessionId) => effectiveConfig(sessionId),
+    llm: () => appRootLlm(),
+    logger: ctx.logger('advisor'),
+  })
   /**
    * Runtime-affecting signature per session — the values that pin one
    * {@link AdvisorRuntime}: the effective switch, the post-gate enable (S4),
@@ -391,6 +412,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       effective.systemPrompt,
       globalResolved.proseFallback ?? false,
       globalResolved.reasoningEffort ?? '',
+      // `nextPrompt` is deliberately ABSENT (plan dsh-advisor-next-prompt-n12,
+      // T1 — config-key checklist seam 6): a `nextPrompt`-only edit must not
+      // rebuild review runtimes. The prediction gate reads it live on every
+      // arm/fire, and it touches no review-call construction constant. It is
+      // likewise NOT in LEGACY_KEYS (a new key, no stored-profile history).
     ].join('\u0000')
   }
   /**
@@ -492,6 +518,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     delete (globalThis as Record<string, unknown>)[REVIEWER_KEY]
     validationTeardown.abort('advisor owner disposed')
     overrides.disposeAll()
+    suggestions.disposeAll()
   }, 'advisor: release reviewer claim')
   const observer = new SessionTranscriptObserver({
     maxDeltaMessages: resolved().maxDeltaMessages,
@@ -509,12 +536,27 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       delivery.reset(sessionId)
       runtimes.get(sessionId)?.resetGuard()
     },
+    onCompletedTurnEnd: (sessionId: string) => {
+      // One completed primary turn — arm the next-prompt slot (plan
+      // dsh-advisor-next-prompt-n12, T1). Gated inside the manager (resolver
+      // SSOT); a closed gate arms nothing.
+      suggestions.onCompletedTurnEnd(sessionId)
+    },
+    onUserTurnStart: (sessionId: string) => {
+      // The user started typing — the fence supersedes any in-flight
+      // prediction and clears the stored suggestion immediately (plan
+      // dsh-advisor-next-prompt-n12, T1).
+      suggestions.onUserTurnStart(sessionId)
+    },
     onDelta: (sessionId: string, delta: Delta) => {
       // Lazy creation fallback covers agents that existed before this plugin
       // loaded (their `agent/created` was never observed); `agent/created`
       // below creates eagerly for the common path. The runtime gate drops the
       // delta for sessions that are disabled or S4-gate-blocked (T7).
       ensureRuntime(sessionId)?.enqueue(delta)
+      // The same delta is the next-prompt prediction context (T1). Ordering
+      // vs the review enqueue is free; the review enqueue stays first.
+      suggestions.onDelta(sessionId, delta)
     },
   })
 
@@ -573,12 +615,14 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     disposeRuntime(agent.id)
     delivery.unregisterAgent(agent.id)
     overrides.clear(agent.id)
+    suggestions.disposeSession(agent.id)
   }, { global: true })
   ctx.on('session/disposed', (session: Session) => {
     observer.disposeSession(session.id)
     disposeRuntime(session.id)
     delivery.unregisterAgent(session.id)
     overrides.clear(session.id)
+    suggestions.disposeSession(session.id)
   }, { global: true })
 
   // T1-settings live re-apply: construction-time latches (immuneTurns on the
@@ -942,6 +986,19 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     },
   }
   sessionControl = sessionControlFace
+
+  // T2 (plan dsh-advisor-next-prompt-n12): the elected owner's suggestion
+  // face — the web read of the SAME `suggestions` manager the observer feeds
+  // (one state store, no divergence). The switch is re-read through the
+  // resolver SSOT on every request through the SESSION-SCOPED effective
+  // config (I-000024): a `/advisor off` override, an S4-blocked gate, or a
+  // `nextPrompt: false` read answers the empty suggestion WITHOUT consulting
+  // the manager — no stale stored value can leak past a config flip — while
+  // an open gate (a pinned-pair session included) serves the stored text
+  // (the same gate the manager applies on arm/fire). The shared factory is
+  // unit-tested in tests/gateway-suggestion.test.ts; read-only: the face
+  // never mutates manager state.
+  suggestionControl = advisorSuggestionFace(effectiveConfig, suggestions)
 
   // T7: the command child activates ONLY when a command registry is composed
   // (conditional child activation — `commands` must NOT join the top-level

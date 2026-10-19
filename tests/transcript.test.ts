@@ -1053,3 +1053,49 @@ describe('SessionTranscriptObserver — wiring (turn detection + per-session dis
     expect(deltas[0]).not.toContain('history')
   })
 })
+
+// ---------------------------------------------------------------------------
+// SessionTranscriptObserver — next-prompt trigger hooks (plan
+// dsh-advisor-next-prompt-n12, T1)
+//
+// The observer-side trigger branches of the next-prompt runner: the manager
+// semantics themselves are covered by tests/next-prompt.test.ts; these cases
+// pin the production event→callback fidelity — the only real arm/fence path.
+// ---------------------------------------------------------------------------
+
+describe('SessionTranscriptObserver — next-prompt trigger hooks (dsh-advisor-next-prompt-n12 T1)', () => {
+  it('fires onCompletedTurnEnd for completed stepped turns only, never for max-tokens or error ends', () => {
+    const completed: string[] = []
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      onDelta: () => {},
+      onCompletedTurnEnd: (sessionId) => completed.push(sessionId),
+    })
+    feed(observer, 's1', [
+      ...simpleTurn(1, 'do it', 'done'),                                     // completed → arm
+      turnStart(2), userMessage('cut'), stepStart(2, 1),
+      assistantMessage('cut reply'), stepEnd(2, 1), turnEnd(2, 'max-tokens'), // stepped, cut-short → no arm
+      ...simpleTurn(3, 'again', 'again done'),                               // completed → arm
+      turnStart(4), userMessage('boom'), stepStart(4, 1),
+      assistantMessage('crashed'), stepEnd(4, 1), turnEnd(4, 'error'),       // stepped, errored → no arm
+    ])
+    expect(completed).toEqual(['s1', 's1'])
+  })
+
+  it('fires onUserTurnStart for every human-input arrival — latched or not — and never for other events', () => {
+    const starts: string[] = []
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      onDelta: () => {},
+      onUserTurnStart: (sessionId) => starts.push(sessionId),
+    })
+    feed(observer, 's1', [
+      ...simpleTurn(1, 'first', 'reply one'),  // its user/message fires; the turn/end then latches the session
+      userMessage('second'),                   // human input on a LATCHED session — the fence still fires
+      assistantMessage('reply two'),
+      inboxSpliced('third'),                   // the inbox-spliced human-input shape fires too
+      toolResultMessage('3 passed'),           // not a human input → no fire
+    ])
+    expect(starts).toEqual(['s1', 's1', 's1'])
+  })
+})

@@ -1,0 +1,46 @@
+/* Next-prompt ghost suggestion (plan dsh-advisor-next-prompt-n12, task 3) —
+ * the occupant of the composer's `conversation.input.overlay` list slot.
+ * The host renders the slot inside a zero-height absolute anchor
+ * (`overlayAnchor { height:0; position:absolute; inset:0 0 auto }`) at the
+ * top of the composer card, so the ghost positions itself absolutely from
+ * the anchor's start with the same geometry as the host's own composer
+ * placeholder (inset 4px 8px auto 14px — the editor's padding). Every color
+ * resolves through a `--dsw-alias-*` token (light/dark adaptive); the ghost
+ * is inert (pointer-events: none) so clicks pass through to the editor. */
+
+/* The ghost line: single-line, ellipsized, muted — it never takes input or
+   focus, it only previews the suggested prompt. */
+.ghost {
+  position: absolute;
+  inset: 4px 8px auto 14px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: inherit;
+  line-height: inherit;
+  color: var(--dsw-alias-label-caption);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* The suggestion text itself carries the ellipsis so a long suggestion
+   truncates before the key badge. */
+.ghostText {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The "→" key badge after the suggestion (ArrowRight — the fill affordance;
+   the label is the aria-label, the glyph is presentational). */
+.ghostBadge {
+  flex: none;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-caption);
+}

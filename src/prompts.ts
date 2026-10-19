@@ -1,5 +1,6 @@
 /**
- * dsh-advisor reviewer system prompt (spec §6, §8.2 KD-2).
+ * dsh-advisor reviewer system prompt (spec §6, §8.2 KD-2) + the next-prompt
+ * prediction system prompt (plan dsh-advisor-next-prompt-n12, T1).
  *
  * The advisor is an independent reviewer attached to a coding session: it
  * receives an incremental markdown delta prefixed with `### Session update`
@@ -36,3 +37,13 @@ Reply with EXACTLY ONE JSON object and nothing else:
 - "note" must be a non-empty string: one concise, specific, actionable observation about this update. One note per update.
 - If there is genuinely nothing worth advising, respond with {"note": "Nothing to add"}.
 - Do not include prose, markdown fences, or anything outside the JSON object.`
+
+/**
+ * The next-prompt prediction system prompt (plan dsh-advisor-next-prompt-n12,
+ * T1): after each completed primary turn the predictor receives the same
+ * incremental transcript delta and replies with ONE plausible next user
+ * prompt for this session — a bare single line, or the literal `NONE` when
+ * nothing is predictable (the caller drops the empty/`NONE` reply silently —
+ * best-effort, no retry-worthy signal).
+ */
+export const DEFAULT_NEXT_PROMPT_SYSTEM_PROMPT = `You predict a coding-agent session's likely next user prompt. You receive a transcript update of the work just completed. Reply with ONE concise, plausible, single-line next user prompt for this session — no quotes, no markdown, no explanation. If nothing is predictable, reply with exactly NONE.`

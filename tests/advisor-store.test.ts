@@ -271,6 +271,7 @@ describe('providers join (KD-S2 configured determination)', () => {
       immuneTurns: 3,
       maxDeltaMessages: 60,
       proseFallback: false,
+      nextPrompt: true,
     })
   })
 
@@ -677,6 +678,83 @@ describe('proseFallback draft field (issue #102 settings sync)', () => {
   })
 })
 
+describe('nextPrompt draft field (plan dsh-advisor-next-prompt-n12, task 3)', () => {
+  it('seeds the field from the resolved config; an absent wire key reads the true default', async () => {
+    // src/config.ts normalizes nextPrompt through z.boolean().default(true)
+    // — the resolved wire carries the boolean, and a containment fallback
+    // that omitted the key still reads the default (never undefined).
+    const absent = scriptedApi({
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+    })
+    const absentStore = new AdvisorSettingsStore(absent.remote, absent.rpc, schema)
+    await absentStore.load()
+    expect(draftOf(absentStore).nextPrompt).toBe(true)
+    expect(absentStore.store.getSnapshot().dirty).toBe(false)
+
+    const explicit = scriptedApi({
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, nextPrompt: false },
+    })
+    const explicitStore = new AdvisorSettingsStore(explicit.remote, explicit.rpc, schema)
+    await explicitStore.load()
+    expect(draftOf(explicitStore).nextPrompt).toBe(false)
+    expect(explicitStore.store.getSnapshot().dirty).toBe(false)
+  })
+
+  it('toggles nextPrompt in the draft (dirty vs the seed, clean when reverted)', async () => {
+    const { remote, rpc } = scriptedApi()
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    expect(draftOf(store).nextPrompt).toBe(true)
+    store.setNextPrompt(false)
+    expect(draftOf(store).nextPrompt).toBe(false)
+    expect(store.store.getSnapshot().dirty).toBe(true)
+    store.setNextPrompt(true) // back to the seed value → empty diff → clean
+    expect(draftOf(store).nextPrompt).toBe(true)
+    expect(store.store.getSnapshot().dirty).toBe(false)
+  })
+
+  it('writes an edited nextPrompt key through the always list', async () => {
+    const { remote, rpc, call } = scriptedApi({
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, nextPrompt: true },
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    store.setNextPrompt(false)
+    await store.apply()
+    const payload = call.mock.calls.find(callArgs => callArgs[1] === 'advisor/set')?.[2] as { args: { patch: Record<string, unknown> } }
+    expect(payload.args.patch).toEqual({ nextPrompt: false })
+  })
+
+  it('keeps an untouched nextPrompt out of a partial apply (no churn)', async () => {
+    const { remote, rpc, call } = scriptedApi({
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, nextPrompt: true },
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    store.setSystemPrompt('edited')
+    await store.apply()
+    const payload = call.mock.calls.find(callArgs => callArgs[1] === 'advisor/set')?.[2] as { args: { patch: Record<string, unknown> } }
+    expect(payload.args.patch).toEqual({ systemPrompt: 'edited' })
+  })
+
+  it('round-trips a non-default false through save and reload', async () => {
+    // The fixture gateway merges the patch and returns the composed config
+    // (the host contract): the stored false survives save → reload, and the
+    // reloaded draft stays clean against the new seed.
+    const { remote, rpc, call } = scriptedApi({
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+    })
+    const store = new AdvisorSettingsStore(remote, rpc, schema)
+    await store.load()
+    store.setNextPrompt(false)
+    await store.apply()
+    expect(call.mock.calls.some(callArgs => callArgs[1] === 'advisor/set')).toBe(true)
+    await store.load() // reload reads the merged config back
+    expect(draftOf(store).nextPrompt).toBe(false)
+    expect(store.store.getSnapshot().dirty).toBe(false)
+  })
+})
+
 describe('invalidations (refreshIfLoaded)', () => {
   it('refetches a loaded store', async () => {
     const { remote, rpc, describe } = scriptedApi()
@@ -829,6 +907,7 @@ describe('gateway availability (KD-G5 — advisorPresent)', () => {
       provider: 'deepseek-official', model: 'ds-a',
       systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20,
       proseFallback: false,
+      nextPrompt: true,
     })
   })
 })
@@ -875,6 +954,7 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
       provider: 'deepseek-official', model: 'ds-a',
       systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20,
       proseFallback: false,
+      nextPrompt: true,
     })
     // Discard is a client-side rewind — no advisor/set call ever happened.
     expect(set).not.toHaveBeenCalled()
@@ -900,6 +980,7 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
       provider: 'deepseek-official', model: 'ds-a',
       systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60,
       proseFallback: false,
+      nextPrompt: true,
     })
   })
 
@@ -964,13 +1045,14 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
     // The rewind target is the default (failed-get) seed — the effective
     // defaults view, still inventing NO provider/model (the gate/wipe hazard
     // this pin guards); the recovery below must still seed the REAL config.
-    expect(draftOf(store)).toEqual({ systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, proseFallback: false })
+    expect(draftOf(store)).toEqual({ systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, proseFallback: false, nextPrompt: true })
     await store.load()
     expect(store.store.getSnapshot().advisorPresent).toBe(true)
     expect(draftOf(store)).toEqual({
       provider: 'deepseek-official', model: 'ds-a',
       systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20,
       proseFallback: false,
+      nextPrompt: true,
     })
   })
 })
