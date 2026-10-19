@@ -1,13 +1,14 @@
 /**
- * Next-prompt ghost suggestion overlay (plan dsh-advisor-next-prompt-n12,
- * task 3): the occupant registered into the shell-declared
- * `conversation.input.overlay` list slot. The resident composer renders that
- * slot inside its card (`div[data-composer-card]`, the overlay anchor's
- * parent), so the ghost previews the reviewer's stored next-prompt
- * suggestion directly in the empty composer — and pressing ArrowRight fills
- * the draft with it.
+ * Next-prompt suggestion dock tip (plan dsh-advisor-next-prompt-n12 task 3;
+ * reworked into the dock-tip form by plan dsh-advisor-next-prompt-e2e-n13):
+ * the occupant registered into the shell-declared `conversation.composer.dock`
+ * list slot — the host's sanctioned ambient seat BELOW the composer card
+ * (`div[data-composer-dock]`, a sibling of `div[data-composer-card]`). The
+ * previous in-composer overlay form fought the host composer (placeholder
+ * stacking, attachment overlap, edge fusion); the tip form has zero overlap
+ * with any composer geometry. Pressing ArrowRight still fills the draft.
  *
- * Render gate: the ghost renders ONLY while a suggestion waits
+ * Render gate: the tip renders ONLY while a suggestion waits
  * (`suggestion !== null`) on an EMPTY draft (`draft === ''`) in the plain
  * phase (`phase === 'plain'`). Any other state renders nothing.
  *
@@ -15,10 +16,10 @@
  * document-level CAPTURE-phase keydown intercepts ONLY a bare ArrowRight
  * (alt/ctrl/meta/shift all false) whose target is the
  * no-focus surface (document/body/html — nothing focused) or inside the
- * composer card (the composer's own editor lives inside the same
- * `div[data-composer-card]` as the overlay anchor), and a click on the →
- * badge fills identically (opaque-fusion follow-up, plan
- * dsh-advisor-next-prompt-e2e-n13). Any FOCUSED element
+ * composer card (the composer's own editor lives inside
+ * `div[data-composer-card]`; the tip sits OUTSIDE the card now, so the card
+ * is located in the document rather than via the component's own root), and
+ * a click ANYWHERE on the tip row fills identically. Any FOCUSED element
  * elsewhere — tree nodes, buttons, menus, editables — keeps native
  * ArrowRight semantics (qc2 F-001). The render gate itself is re-validated
  * INSIDE the shared fill path at event time against the latest render's
@@ -28,7 +29,7 @@
  * is still mounted cannot replace user-typed text (qc2 F-002). On
  * intercept: `preventDefault()` (keydown only), then
  * `inputActions.setDraft(suggestion)`,
- * then the optimistic local clear (suggestion → null) so the ghost
+ * then the optimistic local clear (suggestion → null) so the tip
  * disappears the moment the draft fills.
  *
  * Fetch discipline: fetch on mount, on every consumed refresh-signal epoch
@@ -68,14 +69,14 @@ export interface NextPromptOverlayInjected {
 }
 
 /**
- * Props the renderer binds for the overlay: the session-scoped runtime share
+ * Props the renderer binds for the dock tip: the session-scoped runtime share
  * (whose SessionStandardProps supply the input machine's draft/phase state
  * and the public `inputActions.setDraft` fill verb), the
  * framework-synthesized `t` seat for the declared `settings.advisor`
  * namespace, and the registrant's per-binding business face.
  */
 export type NextPromptOverlayProps =
-  PropsRuntime<'conversation.input.overlay'>
+  PropsRuntime<'conversation.composer.dock'>
   & PropsLocale<'settings.advisor'>
   & InjectFace<NextPromptOverlayInjected>
   & SessionStandardProps
@@ -83,22 +84,25 @@ export type NextPromptOverlayProps =
 /**
  * Whether one keydown event is the fill trigger: a bare ArrowRight (no
  * modifiers) whose target sits in the NO-FOCUS surface or inside the
- * composer card. The card boundary comes from the component's own DOM root —
- * the host renders the overlay anchor inside `div[data-composer-card]`, so a
- * target within THAT card is the composer's own editor surface. Outside the
- * card, the interceptor claims only the surface a browser targets when NO
- * element has focus (document / body / html): every FOCUSED element
- * elsewhere — tree nodes, buttons, menus, editables — keeps its native
- * ArrowRight semantics (qc2 F-001 narrowed the previous draft that hijacked
- * any focused non-editable target).
+ * composer card. The card boundary is resolved in the DOCUMENT — the tip
+ * lives in the dock BELOW the card (a `div[data-composer-dock]` sibling), so
+ * unlike the overlay form the component's own root can no longer anchor the
+ * `closest` walk. The resident composer's card is unique per conversation
+ * view, so one document lookup finds it; a target within THAT card is the
+ * composer's own editor surface. Outside the card, the interceptor claims
+ * only the surface a browser targets when NO element has focus (document /
+ * body / html): every FOCUSED element elsewhere — tree nodes, buttons,
+ * menus, editables — keeps its native ArrowRight semantics (qc2 F-001
+ * narrowed the previous draft that hijacked any focused non-editable
+ * target).
  */
-function isFillTrigger(event: KeyboardEvent, overlayRoot: Element | null): boolean {
+function isFillTrigger(event: KeyboardEvent): boolean {
   if (event.key !== 'ArrowRight') return false
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false
   const target = event.target
   if (!(target instanceof Element)) return true // no target element (e.g. dispatched on document) → no-focus surface
-  const card = overlayRoot?.closest('[data-composer-card]')
-  if (card !== undefined && card !== null && card.contains(target)) return true
+  const card = document.querySelector('[data-composer-card]')
+  if (card !== null && card.contains(target)) return true
   // Outside the card: only the no-focus surface (nothing focused) fills.
   // A focused element is always its own keydown target, so any specific
   // focused element — editable or not — falls through to native behavior.
@@ -106,11 +110,14 @@ function isFillTrigger(event: KeyboardEvent, overlayRoot: Element | null): boole
 }
 
 /**
- * Render the ghost suggestion in the composer: the muted single-line
- * preview plus the "→" badge (its accessible name is `t('nextPromptBadge')`
- * on the `role="img"` span), or nothing when the render gate does not hold.
+ * Render the suggestion as a one-line ambient tip under the composer card:
+ * a sparkle glyph, the localized prefix ("Suggestion" / "建议"), the
+ * single-line ellipsized suggestion text, and a right-aligned subtle accept
+ * control ("→ Accept" / "→ 采纳") — or nothing when the render gate does
+ * not hold. The whole row is one click target running the shared gated
+ * fill path.
  * @param props - slot-delivered injected dependencies and the synthesized seats.
- * @returns the overlay occupant.
+ * @returns the dock-tip occupant.
  */
 export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
   const { controller, useSnapshot, useRefreshSignal, useInput, inputActions, t } = props
@@ -121,8 +128,7 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
   const draft = input.draft
   const phase = input.phase
   // The render gate: a suggestion waits on an empty draft in the plain phase.
-  const showGhost = suggestion !== null && draft === '' && phase === 'plain'
-  const rootRef = useRef<HTMLDivElement | null>(null)
+  const showTip = suggestion !== null && draft === '' && phase === 'plain'
 
   // Fetch on mount and on every consumed refresh-signal epoch bump
   // (connection/reset + window focus ride the plugin's shared debounced
@@ -151,14 +157,14 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
   const inputRef = useRef(input)
   inputRef.current = input
 
-  // The shared gated fill path behind BOTH accept gestures (opaque-fusion
-  // follow-up: the → badge is clickable, and its click performs the same fill
-  // as ArrowRight). The render gate is re-validated against the CURRENT input
-  // snapshot at event time — a fill never replaces user-typed text or crosses
-  // a non-plain phase (qc2 F-002) — then the draft fills with the suggestion
-  // and the ghost clears optimistically (contract ④). Returns whether the
-  // fill ran; the keydown interceptor preventDefaults only on true, so a
-  // violated gate keeps native semantics.
+  // The shared gated fill path behind BOTH accept gestures (ArrowRight, and
+  // a click anywhere on the tip row). The render gate is re-validated
+  // against the CURRENT input snapshot at event time — a fill never
+  // replaces user-typed text or crosses a non-plain phase (qc2 F-002) —
+  // then the draft fills with the suggestion and the tip clears
+  // optimistically (contract ④). Returns whether the fill ran; the keydown
+  // interceptor preventDefaults only on true, so a violated gate keeps
+  // native semantics.
   const fillFromSuggestion = useCallback((): boolean => {
     if (suggestion === null) return false
     const current = inputRef.current
@@ -176,7 +182,7 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
   useEffect(() => {
     if (suggestion === null) return
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (!isFillTrigger(event, rootRef.current)) return
+      if (!isFillTrigger(event)) return
       if (!fillFromSuggestion()) return // violated gate → native ArrowRight semantics
       event.preventDefault()
     }
@@ -184,27 +190,23 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
     return () => { document.removeEventListener('keydown', onKeyDown, true) }
   }, [fillFromSuggestion])
 
-  if (!showGhost || suggestion === null) return null
+  if (!showTip || suggestion === null) return null
   return (
-    // role="status" + aria-live="polite" make the suggestion ANNOUNCED
-    // (round-2 review): assistive tech hears what the suggestion is when it
-    // arrives, without focus — the badge alone only ever named the gesture.
-    <div ref={rootRef} className={styles.ghost} role="status" aria-live="polite">
-      <span className={styles.ghostText}>{suggestion}</span>
-      {/* role="img" gives the aria-label a naming target (a role-less
-          generic span delivers no accessible name — I-000027), and the →
-          glyph matches the ArrowRight accept gesture and copy (I-000028).
-          title surfaces the same hint on hover without adding any visual
-          clutter, and a click routes through the SAME gated fill path as
-          ArrowRight (opaque-fusion follow-up, dsh-advisor-next-prompt-e2e-n13:
-          the badge re-enables pointer events inside the inert container). */}
-      <span
-        className={styles.ghostBadge}
-        role="img"
-        aria-label={t('nextPromptBadge')}
-        title={t('nextPromptBadge')}
-        onClick={() => { fillFromSuggestion() }}
-      >→</span>
+    // role="status" + aria-live="polite" make the suggestion ANNOUNCED:
+    // assistive tech hears what the suggestion is when it arrives, without
+    // focus. The whole row is the accept click target (the row-level
+    // onClick routes through the SAME gated fill path as ArrowRight); the
+    // trailing control is a passive accept AFFORDANCE, not a nested button
+    // — a second interactive descendant inside a live region would just
+    // double the announcements.
+    // `data-advisor-tip` is the CSS scoping hook: next-prompt.module.css
+    // stretches the host dock only when it `:has` this marker, so other
+    // composer docks (no tip) keep the host's centered fit-content layout.
+    <div className={styles.tip} data-advisor-tip="" role="status" aria-live="polite" onClick={() => { fillFromSuggestion() }}>
+      <span className={styles.tipGlyph} aria-hidden="true">✦</span>
+      <span className={styles.tipPrefix}>{t('nextPromptPrefix')}:</span>
+      <span className={styles.tipText}>{suggestion}</span>
+      <span className={styles.tipAccept}>{t('nextPromptAccept')}</span>
     </div>
   )
 }

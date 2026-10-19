@@ -1,73 +1,107 @@
-/* Next-prompt ghost suggestion (plan dsh-advisor-next-prompt-n12, task 3) —
- * the occupant of the composer's `conversation.input.overlay` list slot.
- * The host renders the slot inside a zero-height absolute anchor
- * (`overlayAnchor { height:0; position:absolute; inset:0 0 auto }`) at the
- * top of the composer card, so the ghost positions itself absolutely from
- * the anchor's start with the same geometry as the host's own composer
- * placeholder (inset 4px 8px auto 14px — the editor's padding). While the
- * ghost is visible it BECOMES the placeholder line (opaque fusion, plan
- * dsh-advisor-next-prompt-e2e-n13): its backdrop carries the exact token the
- * host paints the composer card with, so the host placeholder underneath is
- * covered — only one hint line is ever readable, in both themes. Every color
- * resolves through a `--dsw-alias-*`/`--dsw-specific-*` token (light/dark
- * adaptive); the ghost CONTAINER is inert (pointer-events: none) so clicks on
- * the suggestion text pass through to the editor — only the → badge
- * re-enables pointer events (hover hint + click-to-fill). */
+/* Next-prompt suggestion dock tip (plan dsh-advisor-next-prompt-e2e-n13) —
+ * the occupant of the composer's `conversation.composer.dock` list slot
+ * (the host's sanctioned ambient seat: "ambient entries below the composer
+ * card", rendered inside `div[data-composer-dock]`, a sibling of the card).
+ * One compact line UNDER the card — zero overlap with the host placeholder,
+ * the attachments row, or the card geometry (the previous in-composer
+ * overlay form and its backdrop-fusion patches are gone with the overlay
+ * seat). Ambient entry: transparent background (the page surface shows
+ * through), muted `--dsw-alias-*` text tokens (light/dark adaptive), a
+ * subtle row hover (copy brightens + the accept control gains the host's
+ * standard interactive hover wash), and the whole row is one click target
+ * that runs the same gated fill as ArrowRight. */
 
-/* The ghost line: single-line, ellipsized, muted — it never takes input or
-   focus, it only previews the suggested prompt. */
-.ghost {
-  position: absolute;
-  inset: 4px 8px auto 14px;
+/* Stretch the host's fit-content dock to the composer column so the tip can
+   bookend its left edge — but ONLY the dock that carries our tip. The host
+   dock is a fit-content flex item (no width of its own) centered by its
+   column parent, so it is exactly as wide as its content; the unscoped form
+   of this rule also stretched every OTHER composer dock (no tip, host
+   ContextMeter row), moving that row's layout for no reason. `[data-
+   composer-dock]` is the host's stable data attribute (not a hashed class)
+   and `[data-advisor-tip]` is our own marker on the tip root, so the `:has`
+   gate confines the stretch to the tip-bearing dock.
+   Selector shape: the slot outlet wrapper (`div[data-slot=
+   "conversation.composer.dock"]`, `display: contents`) sits BETWEEN the dock
+   and the tip in the DOM — `display: contents` makes the tip a direct FLEX
+   item, not a direct DOM child — so the descendant form is the correct one
+   (`:has(> ...)` would not match). `width: 100%` claims the whole row, and
+   `max-width` pins it to the host's own composer-column token: the card is
+   `width: 100%` clamped by `--dsh-composer-card-max-width`, so without the
+   cap a pane wider than the column would park the tip at the PANE edge
+   instead of the card edge. All three names are host-owned (except our
+   marker); if a future host drops one, this degrades to today's centered
+   fit-content row - no crash, just centering. A browser without `:has()`
+   drops the whole rule for the same graceful fallback. */
+:global([data-composer-dock]:has([data-advisor-tip])) {
+  width: 100%;
+  max-width: var(--dsh-composer-card-max-width);
+}
+
+/* The tip row: ~28px tall, single line, entirely clickable.
+   `margin-right: auto` pushes the tip to the row's left edge; the host's
+   ContextMeter (when it shares the row) keeps the remaining space on the
+   right. */
+.tip {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
+  box-sizing: border-box;
+  height: 28px;
   min-width: 0;
-  overflow: hidden;
-  /* Opaque fusion: paint the backdrop with the SAME token the host uses for
-     the composer card itself (.uV2eYG_card background:
-     var(--dsw-specific-input-major) — light --dsw-static-neutral-bluish-00,
-     dark --dsw-static-neutral-bluish-850, both opaque), so the backdrop is
-     indistinguishable from the card and the host placeholder underneath it
-     can never bleed through. The 4px vertical padding (cancelled by the -4px
-     margins) grows the backdrop one clearance band past the placeholder row
-     (text stays on 4px..28px; backdrop covers 0px..32px) so a long host
-     placeholder line cannot peek out below or around, while the top edge
-     stops exactly at the card's padding box — nothing paints outside the
-     card. Text geometry (font/line-height/inset) is untouched. */
-  padding: 4px 0;
-  margin: -4px 0;
-  background: var(--dsw-specific-input-major);
-  font-size: inherit;
-  line-height: inherit;
-  color: var(--dsw-alias-label-caption);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  pointer-events: none;
-  user-select: none;
-}
-
-/* The suggestion text itself carries the ellipsis so a long suggestion
-   truncates before the key badge. */
-.ghostText {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-/* The "→" key badge after the suggestion (ArrowRight — the fill affordance;
-   the label is the aria-label, the glyph is presentational). Interactive
-   (opaque-fusion follow-up, plan dsh-advisor-next-prompt-e2e-n13): inside
-   the inert ghost container it re-enables pointer events so the hover title
-   hint surfaces and a click performs the same gated fill as ArrowRight,
-   while the container keeps pointer-events: none (clicks on the suggestion
-   text still pass through to the editor). */
-.ghostBadge {
-  flex: none;
+  /* Small top margin so the row sits naturally under the card when the
+     host dock stacks entries tight (the host dock already pulls itself up
+     with a negative bottom margin over the stack gap). */
+  margin-top: 2px;
+  margin-right: auto;
+  padding: 0 8px;
+  border-radius: var(--dsw-radius-md);
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-caption);
-  pointer-events: auto;
-  cursor: default;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Row hover: brighten the copy; the accept control picks up the same
+   interactive hover wash the host paints its own dock action buttons
+   with. */
+.tip:hover {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.tip:hover .tipAccept {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* The leading sparkle glyph marks the line as a suggestion, not an input;
+   the accent follows the host's emphasis alias (light/dark adaptive — the
+   same token the old overlay's accent bar used). Presentational: the row's
+   accessible content is the live-region text, so it is aria-hidden. */
+.tipGlyph {
+  flex: none;
+  color: var(--dsw-alias-state-business-primary);
+}
+
+/* The localized prefix and its colon ("Suggestion:" / "建议:"). */
+.tipPrefix {
+  flex: none;
+}
+
+/* The suggestion text: the flexible middle, truncated with an ellipsis
+   before the accept control. */
+.tipText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The right-aligned accept control: a subtle pill "button" affordance —
+   border-less, wash only on row hover (it is a passive affordance inside
+   the row click target, not a nested interactive element). */
+.tipAccept {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
 }
