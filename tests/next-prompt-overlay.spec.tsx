@@ -226,6 +226,9 @@ describe('next-prompt dock tip (plan dsh-advisor-next-prompt-n12, task 3; dock-t
     // then do the flex layout, ellipsis, and hover styles apply.
     expect(typeof styles.tip).toBe('string')
     expect(screen.getByRole('status').className).toContain(styles.tip)
+    // The CSS gate that confines the dock stretch to THIS dock keys on the
+    // marker attribute, so the visible tip row must actually carry it.
+    expect(screen.getByRole('status').hasAttribute('data-advisor-tip')).toBe(true)
     // Gate-bound: once the render gate breaks, no row exists to carry it.
     h.input.update((s) => { s.draft = 'typed' })
     view.rerender(

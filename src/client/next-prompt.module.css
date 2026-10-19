@@ -12,16 +12,27 @@
  * that runs the same gated fill as ArrowRight. */
 
 /* Stretch the host's fit-content dock to the composer column so the tip can
-   bookend its left edge. The host dock is a fit-content flex item (no width
-   of its own) centered by its column parent, so it is exactly as wide as its
-   content; `[data-composer-dock]` is the host's stable data attribute (not a
-   hashed class). `width: 100%` claims the whole row, and `max-width` pins it
-   to the host's own composer-column token: the card is `width: 100%` clamped
-   by `--dsh-composer-card-max-width`, so without the cap a pane wider than
-   the column would park the tip at the PANE edge instead of the card edge.
-   Both names are host-owned; if a future host drops either, this degrades to
-   today's centered fit-content row - no crash, just centering. */
-:global([data-composer-dock]) {
+   bookend its left edge — but ONLY the dock that carries our tip. The host
+   dock is a fit-content flex item (no width of its own) centered by its
+   column parent, so it is exactly as wide as its content; the unscoped form
+   of this rule also stretched every OTHER composer dock (no tip, host
+   ContextMeter row), moving that row's layout for no reason. `[data-
+   composer-dock]` is the host's stable data attribute (not a hashed class)
+   and `[data-advisor-tip]` is our own marker on the tip root, so the `:has`
+   gate confines the stretch to the tip-bearing dock.
+   Selector shape: the slot outlet wrapper (`div[data-slot=
+   "conversation.composer.dock"]`, `display: contents`) sits BETWEEN the dock
+   and the tip in the DOM — `display: contents` makes the tip a direct FLEX
+   item, not a direct DOM child — so the descendant form is the correct one
+   (`:has(> ...)` would not match). `width: 100%` claims the whole row, and
+   `max-width` pins it to the host's own composer-column token: the card is
+   `width: 100%` clamped by `--dsh-composer-card-max-width`, so without the
+   cap a pane wider than the column would park the tip at the PANE edge
+   instead of the card edge. All three names are host-owned (except our
+   marker); if a future host drops one, this degrades to today's centered
+   fit-content row - no crash, just centering. A browser without `:has()`
+   drops the whole rule for the same graceful fallback. */
+:global([data-composer-dock]:has([data-advisor-tip])) {
   width: 100%;
   max-width: var(--dsh-composer-card-max-width);
 }

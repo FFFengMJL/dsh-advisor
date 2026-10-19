@@ -199,7 +199,10 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
     // trailing control is a passive accept AFFORDANCE, not a nested button
     // — a second interactive descendant inside a live region would just
     // double the announcements.
-    <div className={styles.tip} role="status" aria-live="polite" onClick={() => { fillFromSuggestion() }}>
+    // `data-advisor-tip` is the CSS scoping hook: next-prompt.module.css
+    // stretches the host dock only when it `:has` this marker, so other
+    // composer docks (no tip) keep the host's centered fit-content layout.
+    <div className={styles.tip} data-advisor-tip="" role="status" aria-live="polite" onClick={() => { fillFromSuggestion() }}>
       <span className={styles.tipGlyph} aria-hidden="true">✦</span>
       <span className={styles.tipPrefix}>{t('nextPromptPrefix')}:</span>
       <span className={styles.tipText}>{suggestion}</span>
