@@ -9,7 +9,7 @@
 ![dsh tui](https://img.shields.io/badge/dsh%20tui-compatible-4B32C3.svg)
 [![dshfind](https://dshfind.com/api/badge/omdsh-dev/dsh-advisor?lang=zh)](https://dshfind.com/zh/plugins/omdsh-dev/dsh-advisor?ref=badge)
 
-一个移植 omp「advisor」子系统的独立 dsh（DeepSeek Harness）插件组合包：一个按会话运行的独立评审模型，观察主会话 transcript，用显式配置的模型（provider 与 model 均为必填）评审每个已完成的 stepped turn，并把按严重度排序的建议（nit / concern / blocker）注入回会话——不污染主循环，也不递归地评审自己。
+一个移植 omp「advisor」子系统的独立 dsh（DeepSeek Harness）插件组合包：一个按会话运行的独立评审模型，观察主会话 transcript，用显式配置的模型（provider 与 model 均为必填）评审每个已完成的 stepped turn，并把按严重度排序的建议（nit / concern / blocker）注入回会话。每个已完成的 turn 之后，它还可以预测你的下一提示，并以一键采纳的建议提示条显示在 web composer 下方（仅 web GUI）。两个能力面都不会污染主循环，也不会递归地评审自己。
 
 **仅作建议。** advisor 从不批准或否决主 agent 的动作，也绝不会像主 agent 那样发出命令。每条送达的消息都是自我描述的 advisory 内容；一个行为异常的评审者会被端到端约束（emission guard、immuneTurns 冷却、failure policy），因此它永远不会卡住或污染主循环。
 
