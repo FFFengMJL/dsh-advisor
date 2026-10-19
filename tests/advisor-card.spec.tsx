@@ -117,12 +117,12 @@ function failResult(message: string): RpcResult<unknown> {
 
 /** The wire config the gateway returns when nothing is configured. */
 function defaultConfig(): AdvisorConfigView {
-  return { enabled: false, systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 }
+  return { enabled: false, systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, nextPrompt: true }
 }
 
 /** A complete, gate-passing wire config (the pair is required — no switch). */
 function pairedConfig(): AdvisorConfigView {
-  return { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 }
+  return { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, nextPrompt: true }
 }
 
 const DEEPSEEK: LlmConfigurableProvider = {
@@ -478,9 +478,10 @@ describe('AdvisorCard flat layout (official settings-page language)', () => {
     // issue #102 field carries its tuning hint.
     expect(screen.getByText(en.systemPromptHint)).toBeTruthy()
     expect(screen.getByText(en.proseFallbackHint)).toBeTruthy()
-    // The proseFallback toggle is the ONLY checkbox (the config-level
-    // `enabled` switch is gone — the row toggle is the master switch).
-    expect(view.container.querySelectorAll('input[type="checkbox"]')).toHaveLength(1)
+    // The proseFallback and nextPrompt toggles are the card's checkboxes
+    // (the config-level `enabled` switch is gone — the row toggle is the
+    // master switch).
+    expect(view.container.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
   })
 
   it('renders nothing while the first load is in flight (no chrome to hold the space)', async () => {
@@ -855,6 +856,30 @@ describe('AdvisorCard', () => {
     expect(controller.store.getSnapshot().draft.proseFallback).toBe(true)
     expect((screen.getByLabelText(en.proseFallback) as HTMLInputElement).checked).toBe(true)
     // Both edits stage a dirty draft — Save is enabled (upstream terms).
+    expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('renders the nextPrompt checkbox reflecting the resolved config (plan dsh-advisor-next-prompt-n12, T3)', async () => {
+    // The resolver defaults nextPrompt to true; the checkbox shows the
+    // effective value with its tuning hint.
+    await mountCard({ config: { ...defaultConfig(), nextPrompt: true } })
+    const toggle = screen.getByLabelText(en.nextPrompt) as HTMLInputElement
+    expect(toggle.type).toBe('checkbox')
+    expect(toggle.checked).toBe(true)
+    expect(screen.getByText(en.nextPromptHint)).toBeTruthy()
+  })
+
+  it('reflects a stored false and toggles the nextPrompt draft through the store', async () => {
+    // A gate-passing pair: the toggle's dirty term is the only Save blocker,
+    // so the upstream disabled semantics stay observable in isolation.
+    const { controller, props, view } = await mountCard({ config: { ...pairedConfig(), nextPrompt: false } })
+    expect((screen.getByLabelText(en.nextPrompt) as HTMLInputElement).checked).toBe(false)
+    // Toggling flips the draft boolean and stages a dirty draft — Save is
+    // enabled (upstream terms), and the checkbox re-renders the new value.
+    fireEvent.click(screen.getByLabelText(en.nextPrompt))
+    view.rerender(<AdvisorCard {...props} />)
+    expect(controller.store.getSnapshot().draft.nextPrompt).toBe(true)
+    expect((screen.getByLabelText(en.nextPrompt) as HTMLInputElement).checked).toBe(true)
     expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(false)
   })
 

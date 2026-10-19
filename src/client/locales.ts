@@ -66,6 +66,11 @@ export const en = {
   sessionPending: 'Applying…',
   sessionReset: 'Use global default',
   sessionUnavailable: 'The advisor session control surface is not available on this host. Use /advisor model in the session, or configure the global defaults on the Plugins page.',
+  // Next-prompt ghost suggestion (plan dsh-advisor-next-prompt-n12, T3): the
+  // config-card checkbox copy + the composer ghost's badge aria-label.
+  nextPrompt: 'Next-prompt suggestion',
+  nextPromptHint: 'Show the reviewer’s suggested next prompt as ghost text in the composer; press → to insert it.',
+  nextPromptBadge: 'Press → to insert the suggested prompt',
 }
 
 /** The settings.advisor namespace key union. */
@@ -120,4 +125,7 @@ export const zh: typeof en = {
   sessionPending: '应用中…',
   sessionReset: '使用全局默认',
   sessionUnavailable: '本宿主上的顾问会话控制面不可用。请在会话中使用 /advisor model，或在 Plugins 页配置全局默认值。',
+  nextPrompt: '下一条提示建议',
+  nextPromptHint: '在输入框中以幽灵文本显示审阅者建议的下一条提示；按 → 插入。',
+  nextPromptBadge: '按 → 插入建议的提示',
 }

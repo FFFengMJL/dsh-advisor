@@ -384,6 +384,24 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
           />
           <p className={styles['hint']}>{t('proseFallbackHint')}</p>
         </div>
+        <div className={styles['field']}>
+          <label htmlFor="advisor-next-prompt" className={styles['fieldLabel']}>{t('nextPrompt')}</label>
+          {/* Next-prompt suggestion switch (plan dsh-advisor-next-prompt-n12,
+              T3): gates the reviewer's stored next-prompt suggestion the web
+              composer shows as ghost text. Same field pattern as the other
+              controls: label + htmlFor + aria-label. The seed shows the
+              effective value (the resolver defaults true). */}
+          <input
+            id="advisor-next-prompt"
+            aria-label={t('nextPrompt')}
+            className={styles['checkboxInput']}
+            type="checkbox"
+            checked={draft.nextPrompt ?? true}
+            disabled={busy}
+            onChange={(event) => { controller.setNextPrompt(event.target.checked) }}
+          />
+          <p className={styles['hint']}>{t('nextPromptHint')}</p>
+        </div>
         <div className={styles['numberFields']}>
           <div className={styles['field']}>
             <label htmlFor="advisor-immune-turns" className={styles['fieldLabel']}>{t('immuneTurns')}</label>

@@ -111,6 +111,14 @@ export interface AdvisorConfigView {
    * present-as-undefined).
    */
   reasoningEffort?: string
+  /**
+   * Next-prompt suggestion switch (plan dsh-advisor-next-prompt-n12, T1):
+   * whether the reviewer may store a suggested next prompt for the session's
+   * composer (the web ghost surface reads it through `/api/advisor/suggestion`).
+   * The resolver defaults it to true (src/config.ts `z.boolean().default(true)`),
+   * so a containment wire that omitted the key still reads the default.
+   */
+  nextPrompt?: boolean
   /** Present iff the advisor is disabled by the explicit model gate. */
   disabledReason?: string
 }
@@ -192,6 +200,13 @@ export interface AdvisorDraft {
    * seeded value diffs to an explicit '' override, unseeded → omitted.
    */
   reasoningEffort?: string
+  /**
+   * Next-prompt suggestion switch (plan dsh-advisor-next-prompt-n12, T3);
+   * the resolver's default is true — the seed shows the effective value and
+   * never invents one the wire does not pin (an absent key reads the
+   * schema default below).
+   */
+  nextPrompt?: boolean
 }
 
 /** Why an Apply failed (copy keys resolve in the card; raw text passes through). */
@@ -310,6 +325,11 @@ function draftOfConfig(config: AdvisorConfigView | undefined): AdvisorDraft {
     // Thinking-effort override (T1 key): absent on the wire → automatic —
     // the seed never invents a value the host does not pin.
     reasoningEffort: stringField(config?.reasoningEffort),
+    // Next-prompt switch (plan dsh-advisor-next-prompt-n12, T3): the
+    // resolver defaults it to true (src/config.ts `z.boolean().default(true)`)
+    // — the seed shows the effective value, so a wire that omitted the key
+    // still reads the default rather than inventing the opposite.
+    nextPrompt: typeof config?.nextPrompt === 'boolean' ? config.nextPrompt : true,
   }
 }
 
@@ -799,6 +819,11 @@ export class AdvisorSettingsStore {
     this.setField('proseFallback', value)
   }
 
+  /** Set the next-prompt suggestion switch (plan dsh-advisor-next-prompt-n12, T3). */
+  setNextPrompt(value: boolean): void {
+    this.setField('nextPrompt', value)
+  }
+
   /**
    * Refuse in a read-only environment (store-side defense-in-depth for the
    * W-1 invariant — a write must never be issued when the UI declares the
@@ -926,7 +951,7 @@ export class AdvisorSettingsStore {
    */
   private patchFor(draft: AdvisorDraft): Record<string, unknown> {
     const patch: Record<string, unknown> = {}
-    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'proseFallback'] as const
+    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'proseFallback', 'nextPrompt'] as const
     for (const key of always) {
       const next = draft[key]
       // A cleared number input (undefined) means "leave the stored value

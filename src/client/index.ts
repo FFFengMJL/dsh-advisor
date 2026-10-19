@@ -55,17 +55,23 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { AdvisorCard } from './advisor-card.tsx'
 import { AdvisorSessionAction } from './advisor-session.tsx'
 import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } from './advisor-store.ts'
+import { NextPromptOverlay } from './next-prompt-overlay.tsx'
+import { AdvisorSuggestionController } from './next-prompt-store.ts'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { en, zh, type AdvisorKey } from './locales.ts'
 
 export type { AdvisorCardInjected, AdvisorCardProps } from './advisor-card.tsx'
 export type { AdvisorSessionActionInjected, AdvisorSessionActionProps } from './advisor-session.tsx'
+export type { NextPromptOverlayInjected, NextPromptOverlayProps } from './next-prompt-overlay.tsx'
 export type { AdvisorKey } from './locales.ts'
 export type {
   AdvisorDraft, AdvisorSessionMenuState, AdvisorSessionModelController, AdvisorSessionRpcPayload,
   AdvisorSessionSelection, AdvisorSessionSnapshotView, AdvisorSettingsState, AdvisorSettingsStore,
   ApplyFailure, ApplyState, ModelOption, ModelsEmptyReason, ProviderOption,
 } from './advisor-store.ts'
+export type {
+  AdvisorSuggestionController, AdvisorSuggestionState,
+} from './next-prompt-store.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -259,5 +265,37 @@ export function apply(ctx: ClientContext): void {
         }
       },
     }, AdvisorSessionAction)
+  })
+
+  // T3 (plan dsh-advisor-next-prompt-n12): the next-prompt ghost suggestion
+  // in the resident composer — the session-scoped occupant of the
+  // shell-declared `conversation.input.overlay` list slot (rendered by the
+  // composer INSIDE its card, so the overlay's fill target boundary is that
+  // card). Same generator + `yield` shape as the B2 session action; the
+  // inject factory builds ONE AdvisorSuggestionController per session scope
+  // binding (the renderer memoizes the face per entry × binding, so every
+  // fetch carries its own sessionId), and the refresh signals ride the SAME
+  // epoch plane registered above (connection/reset + window focus) — no new
+  // push-event contract. The component reads the composer's input machine
+  // through SessionStandardProps (draft/phase gate + inputActions.setDraft).
+  ctx.slots.inject('conversation.input.overlay', function* () {
+    yield ctx.slots.register({
+      name: 'conversation.input.overlay',
+      // List slot: one cell per `id` — this bundle contributes exactly one
+      // overlay occupant; default order keeps registration sequencing.
+      id: BUNDLE_NAME,
+      locale: NS,
+      inject: (sessionId: string) => {
+        const overlayController = new AdvisorSuggestionController(sessionId, connection.rpc)
+        return {
+          sessionId,
+          controller: overlayController,
+          hooks: {
+            snapshot: overlayController.store,
+            refreshSignal,
+          },
+        }
+      },
+    }, NextPromptOverlay)
   })
 }
