@@ -88,6 +88,8 @@ dsh --profile web --dump-config   # 显示带 advisor 配置行的 "# == dsh-adv
 
 在 **web** 端，同样的会话级模型控制由会话头部的 **Advisor 动作**承载（要求 dsh web 构建的 shell 声明 `conversation.session.header.actions` 插槽——dsh ≥ 0.1.7-rc.1）。该动作绑定在它所在的会话上：显示生效的评审 pair、其来源（`session override` / `global default`）与 live-session 生存期；**Pin this model** 为该会话钉住 provider + model，**Use global default** 去除钉住（即 reset 路径）。它只通过插件会话端点（`/api/advisor/getSession` + `/api/advisor/setSessionModel`）写入——与 `/advisor model` 同一控制器、同一校验与栅栏，从不写持久化配置——并且当会话控制面不可用时，绝不回退到全局配置写通道。控件在打开时刷新（打开期间断连/聚焦也会刷新）；没有后台轮询。插件页上的全局卡片保持仅全局。
 
+![会话头部 Advisor 动作弹层:显示生效的评审 pair、其来源与钉住控件](docs/screenshots/advisor-session-action.webp)
+
 ## 能力一览
 
 - **每个会话一个独立评审者**：独立的模型调用观察主 transcript 并评审每个 stepped 主 turn；advisor 消息被排除在此后的 delta 之外，因此 advisor 不会读回自己的建议。自审排除同时识别 advisor 当前的 producer kind（`advisor`）与仍可打开日志中可能出现的两种历史形状：史前直接 `{ kind: 'advisor' }` 的 note，以及 0.1.6 时代的 note 经 V3→V4 内存迁移后的形状（`kind: 'plugin:advisor'`）——身份迁移不会孤儿化任何一代已持久化的 note。
@@ -102,6 +104,8 @@ dsh --profile web --dump-config   # 显示带 advisor 配置行的 "# == dsh-adv
 - **不卡主循环的失败策略**：失败或 quota 耗尽的 advisor 只会丢弃自己有界的 backlog——永远不会卡住或污染主循环。
 - **会话级控制**：`/advisor on|off|status|config|model` 按会话工作；开关与会话级模型钉住都是临时的 override，从不修改持久化配置——`/advisor config` 始终报告全局默认值。在 web 端，会话头部的 **Advisor 动作**经由专属会话端点驱动同一个会话级钉住（见 [Verify](#verify)）。
 - **下一提示建议（仅 web）**：每个已完成的 turn 之后，advisor 做一次 best-effort 预测，猜测用户可能的下一提示，并以提示条形式显示在 web composer 下方——点击提示条（或输入框为空时按 →）即可填入。仅 web GUI 可用（无 TUI 等价物）；预测是 best-effort 的，失败时静默。配置：`nextPrompt`（布尔，默认开启）；关闭开关是 web 插件页 Advisor 配置卡片上的 checkbox。
+
+![web composer 下方的下一提示建议提示条(带采纳提示)](docs/screenshots/advisor-next-prompt-tip.webp)
 
 ![注入到会话流中的 advisor 建议](docs/screenshots/advisor-injected-note.webp)
 
