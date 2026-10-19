@@ -60,7 +60,7 @@ import { resolveAdvisorConfig } from './config.js'
 import type { AdvisorConfig, ResolvedAdvisorConfig } from './config.js'
 import { installAdvisorSettings } from './settings.js'
 import { AdvisorConfigGateway, advisorSessionError, advisorTypertContribution } from './gateway.js'
-import type { AdvisorSessionGatewayFace, AdvisorSessionRpcResult } from './gateway.js'
+import type { AdvisorSessionGatewayFace, AdvisorSessionRpcResult, AdvisorSuggestionFace } from './gateway.js'
 import { SessionTranscriptObserver } from './transcript.js'
 import type { Delta } from './transcript.js'
 import { AdvisorRuntime } from './advisor-runtime.js'
@@ -221,9 +221,10 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   const appRootLlm = (): typeof ctx.llm =>
     ((ctx as unknown as { root?: { get?: (k: string) => unknown } }).root?.get?.('llm') as typeof ctx.llm) ?? ctx.llm
   let sessionControl: AdvisorSessionGatewayFace | undefined
+  let suggestionControl: AdvisorSuggestionFace | undefined
   try {
     new AdvisorConfigGateway(ctx, bridge, () => sessionControl, (provider, model, signal) =>
-      appRootLlm().resolveModelInfo(provider, model, signal), ctx.logger('advisor'))
+      appRootLlm().resolveModelInfo(provider, model, signal), ctx.logger('advisor'), () => suggestionControl)
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('advisor').debug('advisor gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
@@ -981,6 +982,23 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     },
   }
   sessionControl = sessionControlFace
+
+  // T2 (plan dsh-advisor-next-prompt-n12): the elected owner's suggestion
+  // face — the web read of the SAME `suggestions` manager the observer feeds
+  // (one state store, no divergence). The switch is re-read through the
+  // resolver SSOT on every request: a freshly-resolved config with
+  // `nextPrompt: false`, or a blocked S4 gate (`enabled: false`), answers
+  // the empty suggestion WITHOUT consulting the manager — no stale stored
+  // value can leak past a config flip (the same gate the manager applies on
+  // arm/fire). Read-only: the face never mutates manager state.
+  const suggestionControlFace: AdvisorSuggestionFace = {
+    getSuggestion(sessionId) {
+      const config = safeResolved()
+      if (!config.enabled || !config.nextPrompt) return { suggestion: null }
+      return suggestions.getSuggestion(sessionId)
+    },
+  }
+  suggestionControl = suggestionControlFace
 
   // T7: the command child activates ONLY when a command registry is composed
   // (conditional child activation — `commands` must NOT join the top-level
