@@ -58,11 +58,13 @@ describe('plain-value entry (integration harness form, behavior identical to tod
     // Key set: T1 (issue #102) added proseFallback to the schema with a
     // default, so the resolved shape carries it filled (false) — the
     // resolver default-fill is part of the pinned contract. maxTokens is
-    // gone (2026-10-18 ruling).
+    // gone (2026-10-18 ruling). nextPrompt (plan dsh-advisor-next-prompt-n12)
+    // joins the schema with a default, pinned here as true.
     expect(resolveAdvisorConfig(bridge.source())).toEqual({
       enabled: true,
       provider: 'deepseek',
       model: 'deepseek-chat',
+      nextPrompt: true,
       systemPrompt: '',
       immuneTurns: 5,
       maxDeltaMessages: 60,
