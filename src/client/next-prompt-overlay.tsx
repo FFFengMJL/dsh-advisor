@@ -11,18 +11,23 @@
  * (`suggestion !== null`) on an EMPTY draft (`draft === ''`) in the plain
  * phase (`phase === 'plain'`). Any other state renders nothing.
  *
- * Fill contract: a document-level CAPTURE-phase keydown intercepts ONLY a
- * bare ArrowRight (alt/ctrl/meta/shift all false) whose target is the
+ * Fill contract: two accept gestures share one gated fill path — a
+ * document-level CAPTURE-phase keydown intercepts ONLY a bare ArrowRight
+ * (alt/ctrl/meta/shift all false) whose target is the
  * no-focus surface (document/body/html — nothing focused) or inside the
  * composer card (the composer's own editor lives inside the same
- * `div[data-composer-card]` as the overlay anchor). Any FOCUSED element
+ * `div[data-composer-card]` as the overlay anchor), and a click on the →
+ * badge fills identically (opaque-fusion follow-up, plan
+ * dsh-advisor-next-prompt-e2e-n13). Any FOCUSED element
  * elsewhere — tree nodes, buttons, menus, editables — keeps native
  * ArrowRight semantics (qc2 F-001). The render gate itself is re-validated
- * INSIDE the handler against the latest render's input snapshot: in the
+ * INSIDE the shared fill path at event time against the latest render's
+ * input snapshot: in the
  * React commit→passive-effect window a non-empty draft (or a moved phase)
  * passes through natively, no preventDefault, no fill — the listener that
  * is still mounted cannot replace user-typed text (qc2 F-002). On
- * intercept: `preventDefault()`, then `inputActions.setDraft(suggestion)`,
+ * intercept: `preventDefault()` (keydown only), then
+ * `inputActions.setDraft(suggestion)`,
  * then the optimistic local clear (suggestion → null) so the ghost
  * disappears the moment the draft fills.
  *
@@ -35,7 +40,7 @@
  * retry storm — the next signal or scheduled poll is the next attempt).
  */
 
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime, SessionStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { NEXT_PROMPT_IDLE_POLL_MS } from './next-prompt-store.ts'
@@ -146,30 +151,38 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
   const inputRef = useRef(input)
   inputRef.current = input
 
+  // The shared gated fill path behind BOTH accept gestures (opaque-fusion
+  // follow-up: the → badge is clickable, and its click performs the same fill
+  // as ArrowRight). The render gate is re-validated against the CURRENT input
+  // snapshot at event time — a fill never replaces user-typed text or crosses
+  // a non-plain phase (qc2 F-002) — then the draft fills with the suggestion
+  // and the ghost clears optimistically (contract ④). Returns whether the
+  // fill ran; the keydown interceptor preventDefaults only on true, so a
+  // violated gate keeps native semantics.
+  const fillFromSuggestion = useCallback((): boolean => {
+    if (suggestion === null) return false
+    const current = inputRef.current
+    if (current.draft !== '' || current.phase !== 'plain') return false
+    inputActions.setDraft(suggestion)
+    controller.consume()
+    return true
+  }, [controller, inputActions, suggestion])
+
   // Document-level capture-phase fill listener. Mounted while a suggestion
   // waits; the RENDER gate (empty draft, plain phase) is re-validated inside
-  // the handler at event time, so the listener surviving the commit→
+  // the shared fill path at event time, so the listener surviving the commit→
   // passive-effect teardown window can never fill over user-typed text
   // (qc2 F-002).
   useEffect(() => {
     if (suggestion === null) return
     const onKeyDown = (event: KeyboardEvent): void => {
       if (!isFillTrigger(event, rootRef.current)) return
-      // Re-validate the render gate against the CURRENT input snapshot:
-      // skip WITHOUT preventDefault when the draft is no longer empty or
-      // the phase left plain — native ArrowRight semantics (caret motion)
-      // apply instead of a fill that would replace user-typed text.
-      const current = inputRef.current
-      if (current.draft !== '' || current.phase !== 'plain') return
+      if (!fillFromSuggestion()) return // violated gate → native ArrowRight semantics
       event.preventDefault()
-      inputActions.setDraft(suggestion)
-      // Optimistic local clear: the ghost disappears the moment the draft
-      // fills; the next converging fetch is harmless (contract ④).
-      controller.consume()
     }
     document.addEventListener('keydown', onKeyDown, true)
     return () => { document.removeEventListener('keydown', onKeyDown, true) }
-  }, [controller, inputActions, suggestion])
+  }, [fillFromSuggestion])
 
   if (!showGhost || suggestion === null) return null
   return (
@@ -182,12 +195,15 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
           generic span delivers no accessible name — I-000027), and the →
           glyph matches the ArrowRight accept gesture and copy (I-000028).
           title surfaces the same hint on hover without adding any visual
-          clutter (opaque-fusion round, dsh-advisor-next-prompt-e2e-n13). */}
+          clutter, and a click routes through the SAME gated fill path as
+          ArrowRight (opaque-fusion follow-up, dsh-advisor-next-prompt-e2e-n13:
+          the badge re-enables pointer events inside the inert container). */}
       <span
         className={styles.ghostBadge}
         role="img"
         aria-label={t('nextPromptBadge')}
         title={t('nextPromptBadge')}
+        onClick={() => { fillFromSuggestion() }}
       >→</span>
     </div>
   )

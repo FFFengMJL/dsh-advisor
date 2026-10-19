@@ -10,8 +10,9 @@
  * host paints the composer card with, so the host placeholder underneath is
  * covered — only one hint line is ever readable, in both themes. Every color
  * resolves through a `--dsw-alias-*`/`--dsw-specific-*` token (light/dark
- * adaptive); the ghost is inert (pointer-events: none) so clicks pass
- * through to the editor. */
+ * adaptive); the ghost CONTAINER is inert (pointer-events: none) so clicks on
+ * the suggestion text pass through to the editor — only the → badge
+ * re-enables pointer events (hover hint + click-to-fill). */
 
 /* The ghost line: single-line, ellipsized, muted — it never takes input or
    focus, it only previews the suggested prompt. */
@@ -56,10 +57,17 @@
 }
 
 /* The "→" key badge after the suggestion (ArrowRight — the fill affordance;
-   the label is the aria-label, the glyph is presentational). */
+   the label is the aria-label, the glyph is presentational). Interactive
+   (opaque-fusion follow-up, plan dsh-advisor-next-prompt-e2e-n13): inside
+   the inert ghost container it re-enables pointer events so the hover title
+   hint surfaces and a click performs the same gated fill as ArrowRight,
+   while the container keeps pointer-events: none (clicks on the suggestion
+   text still pass through to the editor). */
 .ghostBadge {
   flex: none;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-caption);
+  pointer-events: auto;
+  cursor: default;
 }

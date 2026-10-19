@@ -39,6 +39,11 @@
  *    nothing, no retry storm — the next signal (or scheduled poll) is the
  *    next attempt. A contract-violating PRIMITIVE payload settles
  *    `unavailable` the same way (never an unhandled TypeError — round 2).
+ * ⑦ badge click-to-fill (opaque-fusion follow-up, e2e-n13): clicking the →
+ *    badge routes through the SAME gated fill path as ArrowRight —
+ *    setDraft(suggestion) + optimistic clear; once the render gate is
+ *    violated (non-empty draft) the clickable badge is gone with the ghost
+ *    and a click is a no-op (no fill, nothing consumed).
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -265,6 +270,45 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
       </ComposerCard>,
     )
     expect(screen.queryByText(SUGGESTION)).toBeNull()
+  })
+
+  it('fills the draft when the badge is clicked and clears the suggestion optimistically', async () => {
+    const h = harness()
+    const view = await mountWithSuggestion(h)
+
+    // Badge click-to-fill (⑦): the click routes through the SAME gated fill
+    // path as ArrowRight — setDraft(suggestion), then the optimistic clear.
+    fireEvent.click(screen.getByRole('img', { name: en.nextPromptBadge }))
+    expect(h.setDraft).toHaveBeenCalledTimes(1)
+    expect(h.setDraft).toHaveBeenCalledWith(SUGGESTION)
+    await waitFor(() => expect(h.controller.store.getSnapshot().suggestion).toBeNull())
+    view.rerender(
+      <ComposerCard>
+        <NextPromptOverlay {...h.props} />
+      </ComposerCard>,
+    )
+    expect(screen.queryByText(SUGGESTION)).toBeNull()
+  })
+
+  it('makes a badge click a no-op once the render gate is violated (non-empty draft)', async () => {
+    const h = harness()
+    const view = await mountWithSuggestion(h)
+
+    // The gate breaks (the user typed): the ghost — and its clickable badge —
+    // leaves the DOM with it, so the click surface no longer exists. Any
+    // click landing where the badge used to be is a plain no-op: no fill,
+    // nothing consumed (⑦ violated-gate case; a click carries no
+    // preventDefault contract).
+    h.input.update((s) => { s.draft = 'user-typed' })
+    view.rerender(
+      <ComposerCard>
+        <NextPromptOverlay {...h.props} />
+      </ComposerCard>,
+    )
+    expect(screen.queryByRole('img', { name: en.nextPromptBadge })).toBeNull()
+    fireEvent.click(view.container.querySelector('[data-composer-card]')!)
+    expect(h.setDraft).not.toHaveBeenCalled()
+    expect(h.controller.store.getSnapshot().suggestion).toBe(SUGGESTION)
   })
 
   it('keeps native semantics for modifier keys, other keys, and editables outside the composer card', async () => {
