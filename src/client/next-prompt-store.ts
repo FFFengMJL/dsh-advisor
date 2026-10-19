@@ -99,7 +99,16 @@ export class AdvisorSuggestionController {
       // Transport failure → payload stays undefined (unavailable below).
     }
     if (seq !== this.requestSeq) return
-    if (payload !== undefined && 'suggestion' in payload) {
+    // The object guard keeps the shape check inside the documented
+    // every-malformed-payload path: a contract-violating PRIMITIVE payload
+    // (`'suggestion' in 42` would throw TypeError) settles `unavailable`
+    // like every other malformed shape, never an unhandled rejection.
+    if (
+      payload !== undefined
+      && typeof payload === 'object'
+      && payload !== null
+      && 'suggestion' in payload
+    ) {
       const suggestion = typeof payload.suggestion === 'string' && payload.suggestion.length > 0
         ? payload.suggestion
         : null

@@ -14,9 +14,14 @@
  *    it; a result computed for a superseded generation is discarded (text and
  *    counters untouched).
  * 4. Best-effort — fire-and-forget with its own dsh-timeout `deadline`; at
- *    most ONE lightweight retry within the same generation; every failure
+ *    most ONE lightweight retry within the same generation, and the
+ *    session-scoped gate is re-read before EVERY attempt (a mid-chain
+ *    config flip or a provider/model pair change aborts the chain —
+ *    I-000030); every failure
  *    (throw, deadline, empty/`NONE` reply) is a silent drop with a debug log.
  * 5. Shaping — strip C0 control characters (keeping whitespace), strip
+ *    Unicode invisible marks (soft hyphen, ALM, MVS, zero-width, bidi,
+ *    joiners/invisible operators, tag characters), strip
  *    surrounding quotes/backticks/code fences, collapse whitespace runs to
  *    single spaces, reject the empty result, truncate to
  *    `NEXT_PROMPT_MAX_CHARS` CODE POINTS (never splitting a surrogate pair);
@@ -510,6 +515,60 @@ describe('best-effort (contract 4)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Mid-chain gate re-check (I-000030 / I-000024 residual)
+// ---------------------------------------------------------------------------
+
+describe('mid-chain gate re-check (I-000030)', () => {
+  it('never re-issues the retry after the gate closed mid-flight', async () => {
+    vi.useFakeTimers()
+    try {
+      // Script has ONE entry: any second call would throw (fake llm guard),
+      // failing the test if the retry went out past the closed gate.
+      const llm = new FakeLlm([{ hang: true }])
+      const configRef = { current: baseConfig() }
+      const { manager } = makeManager(llm, () => configRef.current, { callTimeoutMs: 20 })
+
+      manager.onCompletedTurnEnd('s')
+      manager.onDelta('s', delta('turn update')) // attempt 1 in flight (hung)
+      configRef.current = { ...baseConfig(), enabled: false } // `/advisor off` mid-flight
+
+      await vi.advanceTimersByTimeAsync(100) // the hung attempt hits its deadline
+
+      // EXACTLY ONE llm call: the first attempt's failure must not fund a
+      // retry — the per-attempt re-read sees the closed gate and aborts.
+      expect(llm.calls).toHaveLength(1)
+      expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('aborts the chain when the provider/model pair changed mid-flight (no re-route)', async () => {
+    vi.useFakeTimers()
+    try {
+      const llm = new FakeLlm([{ hang: true }])
+      const configRef = { current: baseConfig() }
+      const { manager } = makeManager(llm, () => configRef.current, { callTimeoutMs: 20 })
+
+      manager.onCompletedTurnEnd('s')
+      manager.onDelta('s', delta('turn update')) // attempt 1 under the ORIGINAL pair (hung)
+      configRef.current = { ...baseConfig(), provider: 'moved-provider', model: 'moved-model' }
+
+      await vi.advanceTimersByTimeAsync(100)
+
+      // EXACTLY ONE llm call, still under the original pair: a mid-chain
+      // pair change aborts this prediction (never re-routed) — the next
+      // turn predicts fresh under the new pair.
+      expect(llm.calls).toHaveLength(1)
+      expect(llm.calls[0]).toMatchObject({ provider: 'test-provider', model: 'test-model' })
+      expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Contract 5 — shaping
 // ---------------------------------------------------------------------------
 
@@ -533,6 +592,17 @@ describe('shaping (contract 5)', () => {
     // (U+200B–U+200F) and the BOM (U+FEFF) are stripped invisibly — the
     // visible text and single-space shaping stay intact.
     ['pre\u202Ae\u2066x\u200Bt\u200E and \u200F\uFEFFship it', 'preext and ship it'],
+    // Round-2 invisible-mark policy (I-000031): the soft hyphen, the Arabic
+    // letter mark, the Mongolian vowel separator, the word-joiner range and
+    // the astral tag characters are stripped like the rest — a marks-only
+    // reply stores nothing (visible-empty) and NO<U+2060>NE cannot dodge
+    // the NONE comparison.
+    ['con\u00ADtinue', 'continue'],
+    ['\u061Ccheck\u061C the log', 'check the log'],
+    ['\u180Ere\u180Erun tests', 'rerun tests'],
+    ['\u2060', null],
+    ['NO\u2060NE', null],
+    ['\u{E0061}ship\u{E007F} it', 'ship it'],
     // Truncation lands on a code-point boundary: 119 ASCII + one rocket is
     // exactly 120 code points (121 UTF-16 units) — kept whole, where a
     // unit-boundary slice would store the rocket's lone high surrogate.

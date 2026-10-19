@@ -11,8 +11,10 @@
  * The prediction is strictly best-effort and fully decoupled from the review
  * chain: it never touches `AdvisorRuntime` or delivery state, every failure
  * (throw, deadline, empty/`NONE` reply) is a silent drop with a debug log, the
- * SESSION-SCOPED effective config gates both the arm and the fire read (a
- * `/advisor off` override or a session model pin is honored — I-000024), and
+ * SESSION-SCOPED effective config gates the arm, the fire read AND EVERY
+ * ATTEMPT (a `/advisor off` override, a `nextPrompt: false` flip or a
+ * provider/model pair change mid-chain aborts the prediction instead of
+ * funding another model call — I-000024/I-000030), and
  * the fence is bound to the per-session STATE IDENTITY — a manager-level
  * token never reused after a `disposeSession`/rebuild (I-000026) — so any
  * result computed for a superseded turn is discarded wholesale.
@@ -65,8 +67,9 @@ export interface NextPromptManagerOptions {
   /**
    * Live SESSION-SCOPED effective-config read (the resolver SSOT), keyed by
    * the session the prediction chain acts for: consulted at arm time
-   * (`onCompletedTurnEnd`) AND again at fire time (`onDelta`), so a config
-   * edit between the two can never start a gated prediction call. The
+   * (`onCompletedTurnEnd`), at fire time (`onDelta`) AND before EVERY
+   * attempt inside the prediction chain, so a config edit anywhere in the
+   * window can never start — or continue — a gated prediction call. The
    * wiring passes the session-aware `safeEffective` (the `/advisor on|off`
    * override and the session model pin are folded in — I-000024); a global
    * read here would let an off session keep predicting and ignore its pin.
@@ -124,20 +127,29 @@ const SURROUNDING_FENCE_PATTERN = /^```[^\n]*\n([\s\S]*?)\n?```$/
 const C0_CONTROL_PATTERN = /[\u0000-\u0008\u000E-\u001F]/g
 
 /**
- * Unicode bidi and zero-width marks (PR-review security-hygiene lead): the
- * direction embedding/override characters (U+202A–U+202E), the bidi isolates
- * (U+2066–U+2069), the zero-width characters (U+200B–U+200F — ZWSP, ZWNJ,
- * ZWJ, LRM, RLM) and U+FEFF (BOM / zero-width no-break space). All render
- * invisibly, so a crafted reply could flip or disguise the displayed
- * suggestion text while every visible character still reads as intended —
- * they are stripped before shaping.
+ * Unicode invisible marks (PR-review security-hygiene lead, round 2): every
+ * character class that renders invisibly yet could flip or disguise the
+ * displayed suggestion while the visible text reads as intended —
+ * - U+00AD soft hyphen, U+061C Arabic letter mark, U+180E Mongolian vowel
+ *   separator,
+ * - U+200B–U+200F zero-width characters (ZWSP, ZWNJ, ZWJ, LRM, RLM),
+ * - U+202A–U+202E bidi direction embedding/override characters,
+ * - U+2060–U+2064 word joiner + invisible operators,
+ * - U+2066–U+2069 bidi isolates,
+ * - U+FEFF (BOM / zero-width no-break space),
+ * - U+E0000–U+E007F tag characters (astral — hence the `u` flag).
+ * They are stripped BEFORE the visible-empty and `NONE` checks, so a
+ * marks-only reply stores nothing and `NO<U+2060>NE` cannot dodge the
+ * nothing-predictable comparison.
  */
-const INVISIBLE_MARK_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g
+const INVISIBLE_MARK_PATTERN =
+  /[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu
 
 /**
  * Shape one predictor reply into the stored single-line suggestion (contract
- * 5): strip C0 control characters (keeping whitespace) and Unicode bidi /
- * zero-width marks → trim → strip ONE
+ * 5): strip C0 control characters (keeping whitespace) and Unicode invisible
+ * marks ({@link INVISIBLE_MARK_PATTERN} — before every later check) → trim →
+ * strip ONE
  * surrounding code fence → strip ONE layer of surrounding quotes/backticks →
  * collapse every whitespace run (newlines included) to single spaces → reject
  * the empty result and the literal `NONE` (the "nothing predictable" marker
@@ -253,7 +265,9 @@ export class NextPromptManager {
    * One rendered delta (forwarded AFTER the review enqueue in `index.ts`):
    * the armed slot is consumed exactly once and the delta markdown becomes
    * the prediction context. The gate is re-checked at fire time — the live
-   * config may have flipped between the arm and this delta.
+   * config may have flipped between the arm and this delta — and AGAIN
+   * before every attempt inside `predict` (I-000030), so no snapshot
+   * carried here can outlive the gate.
    */
   onDelta(sessionId: string, delta: Delta): void {
     const state = this.sessions.get(sessionId)
@@ -261,9 +275,10 @@ export class NextPromptManager {
     state.pending = false
     const config = this.resolveConfig(sessionId)
     if (!config.enabled || !config.nextPrompt) return
-    // `enabled` guarantees the pair (S4 gate) — the same non-null reads the
-    // runtime construction in `index.ts` performs behind the same gate.
-    void this.predict(sessionId, state.id, state.generation, delta.markdown, config.provider!, config.model!)
+    // The provider/model pair is resolved per attempt inside `predict` —
+    // passing a snapshot here would let a stale pair fund a retry after the
+    // gate closed or the pin moved (I-000030).
+    void this.predict(sessionId, state.id, state.generation, delta.markdown)
   }
 
   /**
@@ -336,20 +351,38 @@ export class NextPromptManager {
    * immediate lightweight retry, every failure a silent debug drop, and a
    * fence re-check before every attempt AND before the commit — a result
    * computed for a superseded state (identity OR generation, `isCurrent`)
-   * is discarded wholesale (contract 3).
+   * is discarded wholesale (contract 3). The SESSION-SCOPED gate is ALSO
+   * re-read before every attempt (I-000030/I-000024 residual): a config flip
+   * mid-chain (`/advisor off`, `nextPrompt: false`) aborts the chain
+   * immediately — no further model call goes out — and a CHANGED
+   * provider/model pair aborts too (this prediction is never re-routed; the
+   * next turn predicts fresh under the new pair).
    */
   private async predict(
     sessionId: string,
     stateId: number,
     generation: number,
     context: string,
-    provider: string,
-    model: string,
   ): Promise<void> {
     let text: string | undefined
+    let pair: { readonly provider: string; readonly model: string } | undefined
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (!this.isCurrent(sessionId, stateId, generation)) return // superseded
-      const raw = await this.callOnce(context, provider, model)
+      // Per-attempt gate re-read (I-000030): the first attempt's timing is
+      // the provider's, so only a live read (never a snapshot) can stop the
+      // chain the moment the session gate closes. A failed read fails CLOSED
+      // (resolveConfig).
+      const config = this.resolveConfig(sessionId)
+      if (!config.enabled || !config.nextPrompt) return // gate closed mid-chain
+      // `enabled` guarantees the pair (S4 gate) — the same non-null reads the
+      // runtime construction in `index.ts` performs behind the same gate.
+      const attemptPair = { provider: config.provider!, model: config.model! }
+      if (pair !== undefined
+        && (pair.provider !== attemptPair.provider || pair.model !== attemptPair.model)) {
+        return // the pair changed mid-chain — do not re-route this prediction
+      }
+      pair = attemptPair
+      const raw = await this.callOnce(context, attemptPair.provider, attemptPair.model)
       text = raw === undefined ? undefined : shapeNextPrompt(raw)
       if (text !== undefined) break
     }

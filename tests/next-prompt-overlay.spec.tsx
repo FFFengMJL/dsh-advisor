@@ -19,7 +19,9 @@
  *    intercepts nothing (the fill handler re-validates this gate — see ③).
  * ② ghost presentation: the suggestion text renders, plus the "→" badge —
  *    an `role="img"` span (I-000027) whose accessible name is
- *    `t('nextPromptBadge')`, matching the ArrowRight accept gesture.
+ *    `t('nextPromptBadge')`, matching the ArrowRight accept gesture. The
+ *    ghost CONTAINER is a `role="status"` live region (aria-live polite),
+ *    so the suggestion's arrival is announced without focus (round 2).
  * ③ ArrowRight fill: a document-level capture-phase keydown intercepts ONLY
  *    a bare ArrowRight (no modifiers) whose target is the no-focus surface
  *    (document/body — nothing focused) or inside the composer card; a
@@ -35,7 +37,8 @@
  *    timer is cleared when a suggestion arrives).
  * ⑥ failure: transport/business failure → status 'unavailable', renders
  *    nothing, no retry storm — the next signal (or scheduled poll) is the
- *    next attempt.
+ *    next attempt. A contract-violating PRIMITIVE payload settles
+ *    `unavailable` the same way (never an unhandled TypeError — round 2).
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -189,6 +192,11 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     // matches the ArrowRight gesture and copy (I-000028).
     const badge = screen.getByRole('img', { name: en.nextPromptBadge })
     expect(badge.textContent).toContain('→')
+    // The ghost CONTAINER is the live region (round 2): the suggestion is
+    // announced politely when it arrives, without ever taking focus.
+    const live = screen.getByRole('status')
+    expect(live.textContent).toContain(SUGGESTION)
+    expect(live.getAttribute('aria-live')).toBe('polite')
   })
 
   it('renders nothing while the draft is non-empty or the phase is not plain, and intercepts nothing', async () => {
@@ -461,5 +469,21 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
       </ComposerCard>,
     )
     await waitFor(() => expect(h.rpc.calls).toHaveLength(2))
+  })
+
+  it('settles a contract-violating primitive payload to unavailable (no unhandled TypeError)', async () => {
+    // Round 2: a primitive `result.value` (a broken peer) must take the SAME
+    // malformed-payload path as every other failure shape — the shape check
+    // guards with typeof/null instead of throwing on `'suggestion' in x`.
+    const h = harness()
+    render(
+      <ComposerCard>
+        <NextPromptOverlay {...h.props} />
+      </ComposerCard>,
+    )
+    await waitFor(() => expect(h.rpc.calls).toHaveLength(1))
+    h.rpc.settle(ok(42 as unknown))
+    await waitFor(() => expect(h.controller.store.getSnapshot().status).toBe('unavailable'))
+    expect(h.controller.store.getSnapshot().suggestion).toBeNull()
   })
 })

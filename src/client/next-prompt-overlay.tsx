@@ -173,7 +173,10 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
 
   if (!showGhost || suggestion === null) return null
   return (
-    <div ref={rootRef} className={styles.ghost}>
+    // role="status" + aria-live="polite" make the suggestion ANNOUNCED
+    // (round-2 review): assistive tech hears what the suggestion is when it
+    // arrives, without focus — the badge alone only ever named the gesture.
+    <div ref={rootRef} className={styles.ghost} role="status" aria-live="polite">
       <span className={styles.ghostText}>{suggestion}</span>
       {/* role="img" gives the aria-label a naming target (a role-less
           generic span delivers no accessible name — I-000027), and the →

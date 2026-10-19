@@ -36,8 +36,8 @@
   text-overflow: ellipsis;
 }
 
-/* The "⇥" key badge after the suggestion (the fill affordance; the label is
-   the aria-label, the glyph is presentational). */
+/* The "→" key badge after the suggestion (ArrowRight — the fill affordance;
+   the label is the aria-label, the glyph is presentational). */
 .ghostBadge {
   flex: none;
   font-size: 12px;
