@@ -4,9 +4,14 @@
  * (`overlayAnchor { height:0; position:absolute; inset:0 0 auto }`) at the
  * top of the composer card, so the ghost positions itself absolutely from
  * the anchor's start with the same geometry as the host's own composer
- * placeholder (inset 4px 8px auto 14px — the editor's padding). Every color
- * resolves through a `--dsw-alias-*` token (light/dark adaptive); the ghost
- * is inert (pointer-events: none) so clicks pass through to the editor. */
+ * placeholder (inset 4px 8px auto 14px — the editor's padding). While the
+ * ghost is visible it BECOMES the placeholder line (opaque fusion, plan
+ * dsh-advisor-next-prompt-e2e-n13): its backdrop carries the exact token the
+ * host paints the composer card with, so the host placeholder underneath is
+ * covered — only one hint line is ever readable, in both themes. Every color
+ * resolves through a `--dsw-alias-*`/`--dsw-specific-*` token (light/dark
+ * adaptive); the ghost is inert (pointer-events: none) so clicks pass
+ * through to the editor. */
 
 /* The ghost line: single-line, ellipsized, muted — it never takes input or
    focus, it only previews the suggested prompt. */
@@ -18,6 +23,20 @@
   gap: 6px;
   min-width: 0;
   overflow: hidden;
+  /* Opaque fusion: paint the backdrop with the SAME token the host uses for
+     the composer card itself (.uV2eYG_card background:
+     var(--dsw-specific-input-major) — light --dsw-static-neutral-bluish-00,
+     dark --dsw-static-neutral-bluish-850, both opaque), so the backdrop is
+     indistinguishable from the card and the host placeholder underneath it
+     can never bleed through. The 4px vertical padding (cancelled by the -4px
+     margins) grows the backdrop one clearance band past the placeholder row
+     (text stays on 4px..28px; backdrop covers 0px..32px) so a long host
+     placeholder line cannot peek out below or around, while the top edge
+     stops exactly at the card's padding box — nothing paints outside the
+     card. Text geometry (font/line-height/inset) is untouched. */
+  padding: 4px 0;
+  margin: -4px 0;
+  background: var(--dsw-specific-input-major);
   font-size: inherit;
   line-height: inherit;
   color: var(--dsw-alias-label-caption);

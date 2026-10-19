@@ -180,8 +180,15 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
       <span className={styles.ghostText}>{suggestion}</span>
       {/* role="img" gives the aria-label a naming target (a role-less
           generic span delivers no accessible name — I-000027), and the →
-          glyph matches the ArrowRight accept gesture and copy (I-000028). */}
-      <span className={styles.ghostBadge} role="img" aria-label={t('nextPromptBadge')}>→</span>
+          glyph matches the ArrowRight accept gesture and copy (I-000028).
+          title surfaces the same hint on hover without adding any visual
+          clutter (opaque-fusion round, dsh-advisor-next-prompt-e2e-n13). */}
+      <span
+        className={styles.ghostBadge}
+        role="img"
+        aria-label={t('nextPromptBadge')}
+        title={t('nextPromptBadge')}
+      >→</span>
     </div>
   )
 }

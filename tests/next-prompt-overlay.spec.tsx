@@ -48,6 +48,7 @@ import type { HostObservable, SnapshotSelectorHook } from '@deepseek-ai/dsh-clie
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { NextPromptOverlay } from '../src/client/next-prompt-overlay'
 import type { NextPromptOverlayProps } from '../src/client/next-prompt-overlay'
+import styles from '../src/client/next-prompt.module.css'
 import { AdvisorSuggestionController, NEXT_PROMPT_IDLE_POLL_MS } from '../src/client/next-prompt-store'
 import { en } from '../src/client/locales'
 
@@ -197,6 +198,25 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     const live = screen.getByRole('status')
     expect(live.textContent).toContain(SUGGESTION)
     expect(live.getAttribute('aria-live')).toBe('polite')
+  })
+
+  it('carries the ghost module class on the visible ghost container (opaque-fusion backdrop host)', async () => {
+    const h = harness()
+    const view = await mountWithSuggestion(h)
+    // Opaque fusion (e2e-n13 F-1): the backdrop covering the host placeholder
+    // is styled on the ghost CONTAINER in next-prompt.module.css, so the
+    // element on screen must actually carry that module class — only then do
+    // the opaque background and clearance padding apply while visible.
+    expect(typeof styles.ghost).toBe('string')
+    expect(screen.getByRole('status').className).toContain(styles.ghost)
+    // Gate-bound: once the render gate breaks, no container exists to carry it.
+    h.input.update((s) => { s.draft = 'typed' })
+    view.rerender(
+      <ComposerCard>
+        <NextPromptOverlay {...h.props} />
+      </ComposerCard>,
+    )
+    expect(screen.queryByRole('status')).toBeNull()
   })
 
   it('renders nothing while the draft is non-empty or the phase is not plain, and intercepts nothing', async () => {
