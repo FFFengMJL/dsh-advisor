@@ -43,6 +43,7 @@ Edit the `config` of the `advisor` row in your profile's patch layer (`~/.dsh/pr
     maxDeltaMessages: 60         # int ≥ 0, default 60 — delta window; 0 = unbounded
     proseFallback: false         # boolean, default false — deliver a frame-less prose reply as a nit note (opt-in)
     reasoningEffort: ""          # optional; absent/"" = automatic — the smallest thinking effort the selected model declares (values: that model's declared effort ids)
+    nextPrompt: true             # boolean, default true — predict the next prompt as ghost text in the web composer (web GUI only)
 ```
 
 `provider` and `model` are **mandatory**: either missing or empty is a hard gate — the advisor never starts a model call and reports a disabled-with-reason status; unknown config keys are rejected.
@@ -100,6 +101,7 @@ On the **web**, the same session model controls ride the session header's **Advi
 - **Zero-tool minimal start**: the reviewer is an independent model call only — no advisor tools, nothing it can do to the session besides advisory messages.
 - **No-stall failure policy**: a failing or quota-limited advisor only drops its own bounded backlog — it can never park or pollute the primary loop.
 - **Session-scoped controls**: `/advisor on|off|status|config|model` work per session; the toggles and the per-session model pin are ephemeral overrides, never persisted config — `/advisor config` always reports the global defaults. On the web, the session header's **Advisor action** drives the same per-session pin through dedicated session endpoints (see [Verify](#verify)).
+- **Next-prompt suggestion (web only)**: after each completed turn the advisor makes one best-effort prediction of the user's likely next prompt and shows it as ghost text in the web composer — press → with an empty input box to accept it. Web GUI only (no TUI equivalent); predictions are best-effort and silent on failure. Config: `nextPrompt` (boolean, default on); the off switch is the checkbox on the Advisor config card (web Plugins page).
 
 ![Advisor note injected into the session stream](docs/screenshots/advisor-injected-note.webp)
 

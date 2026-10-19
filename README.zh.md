@@ -43,6 +43,7 @@ dsh plugin --profile dsh-tui add dsh-advisor  # dsh-tui 终端 profile
     maxDeltaMessages: 60         # 整数 ≥ 0，默认 60 —— delta 窗口；0 = 无上限
     proseFallback: false         # 布尔，默认 false —— 无 JSON 帧时将散文回复作为 nit note 投递（opt-in）
     reasoningEffort: ""          # 可选；缺省/"" = 自动 —— 所选模型声明的最小思考权重（取值：该模型声明的 effort id）
+    nextPrompt: true             # 布尔，默认 true —— 每个已完成 turn 后在 web composer 预测下一提示并以 ghost text 显示（仅 web GUI）
 ```
 
 `provider` 与 `model` 为**必填**：任一缺失或为空是一个硬门禁——advisor 不会发起任何模型调用，并报告带原因的禁用状态（disabled-with-reason）；未知配置键会被拒绝。
@@ -100,6 +101,7 @@ dsh --profile web --dump-config   # 显示带 advisor 配置行的 "# == dsh-adv
 - **零工具的最小启动**：评审者只是一个独立的模型调用——无 advisor tools，除了 advisory 消息之外它无法对会话做任何事。
 - **不卡主循环的失败策略**：失败或 quota 耗尽的 advisor 只会丢弃自己有界的 backlog——永远不会卡住或污染主循环。
 - **会话级控制**：`/advisor on|off|status|config|model` 按会话工作；开关与会话级模型钉住都是临时的 override，从不修改持久化配置——`/advisor config` 始终报告全局默认值。在 web 端，会话头部的 **Advisor 动作**经由专属会话端点驱动同一个会话级钉住（见 [Verify](#verify)）。
+- **下一提示建议（仅 web）**：每个已完成的 turn 之后，advisor 做一次 best-effort 预测，猜测用户可能的下一提示，并以 ghost text 显示在 web composer 中——输入框为空时按 → 即可填入。仅 web GUI 可用（无 TUI 等价物）；预测是 best-effort 的，失败时静默。配置：`nextPrompt`（布尔，默认开启）；关闭开关是 web 插件页 Advisor 配置卡片上的 checkbox。
 
 ![注入到会话流中的 advisor 建议](docs/screenshots/advisor-injected-note.webp)
 
