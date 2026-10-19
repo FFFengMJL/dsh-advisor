@@ -18,12 +18,20 @@
    focus, it only previews the suggested prompt. */
 .ghost {
   position: absolute;
-  inset: 4px 8px auto 14px;
+  inset: 4px 8px auto 12px;
   display: flex;
   align-items: baseline;
   gap: 6px;
   min-width: 0;
   overflow: hidden;
+  /* Accent bar (hint affordance): a 2px left edge marks the line as a
+     suggestion, not an input. The host paints emphasis/selection edges with
+     var(--dsw-alias-state-business-primary) (focus ring color, workspace
+     trigger hover outline) and that alias is light/dark adaptive, so the bar
+     reads as intentional in both themes; the fallback degrades to the host's
+     standard border token if the alias is ever renamed. The 2px bar occupies
+     12→14px and the content starts at 14px — exactly the host placeholder
+     text column — so text/badge vertical geometry is unchanged. */
   /* Opaque fusion + stacking: paint the backdrop with the SAME token the host
      uses for the composer card itself (.uV2eYG_card background:
      var(--dsw-specific-input-major) — light --dsw-static-neutral-bluish-00,
@@ -36,6 +44,7 @@
      and the line box is exactly the placeholder row. */
   z-index: 1;
   background: var(--dsw-specific-input-major);
+  border-left: 2px solid var(--dsw-alias-state-business-primary, var(--dsw-alias-border-l2));
   font-size: inherit;
   line-height: inherit;
   color: var(--dsw-alias-label-caption);
