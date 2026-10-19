@@ -17,8 +17,9 @@
  * ① render gate: ghost renders ONLY when suggestion !== null && draft === ''
  *    && phase === 'plain'; otherwise nothing renders, and a fill attempt
  *    intercepts nothing (the fill handler re-validates this gate — see ③).
- * ② ghost presentation: the suggestion text renders, plus the "⇥" badge
- *    carrying `aria-label={t('nextPromptBadge')}`.
+ * ② ghost presentation: the suggestion text renders, plus the "→" badge —
+ *    an `role="img"` span (I-000027) whose accessible name is
+ *    `t('nextPromptBadge')`, matching the ArrowRight accept gesture.
  * ③ ArrowRight fill: a document-level capture-phase keydown intercepts ONLY
  *    a bare ArrowRight (no modifiers) whose target is the no-focus surface
  *    (document/body — nothing focused) or inside the composer card; a
@@ -179,12 +180,15 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     })
   })
 
-  it('renders the ghost text and the ⇥ badge label when a suggestion waits on an empty plain draft', async () => {
+  it('renders the ghost text and the → badge (named img) when a suggestion waits on an empty plain draft', async () => {
     const h = harness()
     await mountWithSuggestion(h)
     expect(screen.getByText(SUGGESTION)).toBeTruthy()
-    const badge = screen.getByLabelText(en.nextPromptBadge)
-    expect(badge.textContent).toContain('⇥')
+    // The badge exposes its accessible name through role="img" (a role-less
+    // generic span never announces its aria-label — I-000027), and the glyph
+    // matches the ArrowRight gesture and copy (I-000028).
+    const badge = screen.getByRole('img', { name: en.nextPromptBadge })
+    expect(badge.textContent).toContain('→')
   })
 
   it('renders nothing while the draft is non-empty or the phase is not plain, and intercepts nothing', async () => {

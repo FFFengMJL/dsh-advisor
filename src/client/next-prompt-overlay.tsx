@@ -102,8 +102,8 @@ function isFillTrigger(event: KeyboardEvent, overlayRoot: Element | null): boole
 
 /**
  * Render the ghost suggestion in the composer: the muted single-line
- * preview plus the "⇥" badge (its label is `t('nextPromptBadge')`), or
- * nothing when the render gate does not hold.
+ * preview plus the "→" badge (its accessible name is `t('nextPromptBadge')`
+ * on the `role="img"` span), or nothing when the render gate does not hold.
  * @param props - slot-delivered injected dependencies and the synthesized seats.
  * @returns the overlay occupant.
  */
@@ -175,7 +175,10 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
   return (
     <div ref={rootRef} className={styles.ghost}>
       <span className={styles.ghostText}>{suggestion}</span>
-      <span className={styles.ghostBadge} aria-label={t('nextPromptBadge')}>⇥</span>
+      {/* role="img" gives the aria-label a naming target (a role-less
+          generic span delivers no accessible name — I-000027), and the →
+          glyph matches the ArrowRight accept gesture and copy (I-000028). */}
+      <span className={styles.ghostBadge} role="img" aria-label={t('nextPromptBadge')}>→</span>
     </div>
   )
 }

@@ -124,12 +124,45 @@ class GatedLlm implements AdvisorLlm {
 }
 
 /**
- * Build one manager over a fake llm. `resolve` is a function so gate-flip
- * tests can repoint the live config between the arm and the delta.
+ * Per-call gated llm (I-000026): like {@link GatedLlm}, but each stream call
+ * gets its OWN gate and reply script, so two overlapping predictions can be
+ * released and observed independently — the old state's result vs the
+ * rebuilt state's result.
+ */
+class SequencedGatedLlm implements AdvisorLlm {
+  readonly calls: GenerateOptions[] = []
+  private readonly openers: Array<(chunks: readonly StreamChunk[]) => void> = []
+  private readonly openPromises: Array<Promise<readonly StreamChunk[]>>
+
+  constructor(private readonly scripts: readonly (readonly StreamChunk[])[]) {
+    // One gate per scripted call; the executors run synchronously in map
+    // order, so openers[i] resolves openPromises[i].
+    this.openPromises = scripts.map(() => new Promise<readonly StreamChunk[]>((resolve) => {
+      this.openers.push(resolve)
+    }))
+  }
+
+  stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.calls.push(options)
+    const index = this.calls.length - 1
+    return (async function* (self: SequencedGatedLlm, i: number) {
+      yield* await self.openPromises[i]
+    })(this, index)
+  }
+
+  open(index: number): void {
+    this.openers[index]?.(this.scripts[index]!)
+  }
+}
+
+/**
+ * Build one manager over a fake llm. `resolve` is a function of the SESSION
+ * ID (the I-000024 seam) so gate-flip and per-session tests can repoint the
+ * live config between the arm and the delta — or between sessions.
  */
 function makeManager(
   llm: AdvisorLlm,
-  resolve: () => ResolvedAdvisorConfig = () => baseConfig(),
+  resolve: (sessionId: string) => ResolvedAdvisorConfig = () => baseConfig(),
   overrides: Partial<NextPromptManagerOptions> = {},
 ): { manager: NextPromptManager; logger: { debug: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> } } {
   const logger = { debug: vi.fn(), warn: vi.fn() }
@@ -218,6 +251,50 @@ describe('gate (contract 1)', () => {
       text: '### Session update\n\n**agent**: fixed the parser',
     })
     expect(manager.getSuggestion('s')).toEqual({ suggestion: 'write a regression test' })
+  })
+
+  it('resolves per session: an off session never predicts, an on session does (I-000024)', async () => {
+    // The resolver is SESSION-SCOPED: session `on` reads the enabled
+    // effective config, session `off` reads its `/advisor off` override
+    // (enabled: false) — a global read would let `off` keep predicting.
+    const llm = new FakeLlm([{ chunks: textReply('for the on session') }])
+    const { manager } = makeManager(llm, (sessionId) =>
+      sessionId === 'on' ? baseConfig() : { ...baseConfig(), enabled: false })
+
+    manager.onCompletedTurnEnd('on')
+    manager.onDelta('on', delta('turn update'))
+    manager.onCompletedTurnEnd('off')
+    manager.onDelta('off', delta('turn update'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(1)
+    expect(manager.getSuggestion('on')).toEqual({ suggestion: 'for the on session' })
+    expect(manager.getSuggestion('off')).toEqual({ suggestion: null })
+  })
+
+  it('predicts through each session\'s own pinned pair (I-000024)', async () => {
+    // A session pin is part of the effective config the gate reads, so the
+    // prediction call carries the PINNED provider/model, not the global one.
+    const llm = new FakeLlm([
+      { chunks: textReply('pinned reply') },
+      { chunks: textReply('global reply') },
+    ])
+    const { manager } = makeManager(llm, (sessionId) => sessionId === 'pinned'
+      ? { ...baseConfig(), provider: 'pinned-provider', model: 'pinned-model' }
+      : baseConfig())
+
+    manager.onCompletedTurnEnd('pinned')
+    manager.onDelta('pinned', delta('turn update'))
+    await settle()
+    manager.onCompletedTurnEnd('global')
+    manager.onDelta('global', delta('turn update'))
+    await settle()
+
+    expect(llm.calls).toHaveLength(2)
+    expect(llm.calls[0]).toMatchObject({ provider: 'pinned-provider', model: 'pinned-model' })
+    expect(llm.calls[1]).toMatchObject({ provider: 'test-provider', model: 'test-model' })
+    expect(manager.getSuggestion('pinned')).toEqual({ suggestion: 'pinned reply' })
+    expect(manager.getSuggestion('global')).toEqual({ suggestion: 'global reply' })
   })
 })
 
@@ -550,5 +627,41 @@ describe('reads and disposal (contract 6)', () => {
 
     expect(llm.calls).toHaveLength(2)
     expect(manager.getSuggestion('s')).toEqual({ suggestion: 'second suggestion' })
+  })
+
+  it('an in-flight prediction from before a same-id rebuild never writes the rebuilt state (I-000026)', async () => {
+    // The stale result must be fenced by STATE IDENTITY, not the numeric
+    // generation: the rebuilt same-id session restarts at generation 1, so
+    // a generation-only comparison would let the old prediction commit into
+    // the new state.
+    const llm = new SequencedGatedLlm([
+      textReply('ghost from the old state'),
+      textReply('fresh suggestion'),
+    ])
+    const { manager } = makeManager(llm)
+
+    // Old state: arm + fire, prediction held in flight.
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('old turn'))
+    expect(llm.calls).toHaveLength(1)
+
+    // Dispose and rebuild the SAME id: new state, generation restarts at 1,
+    // the second prediction arms and fires while the first is still gated.
+    manager.disposeSession('s')
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('new turn'))
+    expect(llm.calls).toHaveLength(2)
+
+    // The OLD prediction settles first: the identity fence discards it, and
+    // nothing is written into the rebuilt state.
+    llm.open(0)
+    await settle()
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: null })
+
+    // The rebuilt state's OWN prediction settles and commits — the fence
+    // invalidates the stale result only, never the live chain.
+    llm.open(1)
+    await settle()
+    expect(manager.getSuggestion('s')).toEqual({ suggestion: 'fresh suggestion' })
   })
 })

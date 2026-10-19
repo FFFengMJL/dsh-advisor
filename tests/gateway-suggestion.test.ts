@@ -22,6 +22,14 @@
  *    red. Non-default-value round-trip evidence stays in T1's config cases
  *    (config-key checklist seam 2); the prediction chain itself is T1's
  *    covered behavior.
+ * ③ Guard face unit (I-000024): the wiring's `advisorSuggestionFace(resolve,
+ *    manager)` factory is tested over both session-scoped arms the composed
+ *    harness cannot reach — the composed RPC surface has no `/advisor off`
+ *    (the override is command-path-only) and `setSessionModel` needs a live
+ *    agent, so `AdvisorSessionOverrides` is unreachable from here. Off arm:
+ *    a session the override turned off answers the empty suggestion even
+ *    with a REAL stored suggestion (masked, not cleared). Pinned arm: a
+ *    pinned-pair session (the pin rides `enabled`) serves the stored text.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -34,7 +42,10 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { installAdvisorSettings } from '../src/settings'
 import { AdvisorConfigGateway } from '../src/gateway'
 import type { AdvisorSuggestionFace, AdvisorSuggestionRpcResult } from '../src/gateway'
-import type { AdvisorConfig } from '../src/config'
+import type { AdvisorConfig, ResolvedAdvisorConfig } from '../src/config'
+import { advisorSuggestionFace, NextPromptManager } from '../src/next-prompt'
+import type { AdvisorLlm } from '../src/advisor-runtime'
+import type { Delta } from '../src/transcript'
 
 // n4 QC F-6: the single-reviewer guard is process-global; the composed tests
 // mount the real plugin, so the flag must reset between cases.
@@ -206,5 +217,93 @@ describe('composed suggestion endpoint (apply wiring)', () => {
     memory.commit(ctx, { nextPrompt: false })
     await Promise.resolve() // let the Loader stand-in's volatile-update re-apply settle
     expect(await invoke()).toEqual({ suggestion: null })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ③ unit: the extracted guard face over the session-scoped resolver (I-000024)
+// ---------------------------------------------------------------------------
+
+/** The session-scoped effective-config shape the wiring's factory receives. */
+const effective = (overrides: Partial<ResolvedAdvisorConfig> = {}): ResolvedAdvisorConfig => ({
+  enabled: true,
+  provider: 'deepseek',
+  model: 'deepseek-chat',
+  systemPrompt: '',
+  immuneTurns: 3,
+  maxDeltaMessages: 60,
+  nextPrompt: true,
+  ...overrides,
+})
+
+/** Flush the fire-and-forget prediction chain (microtasks + one macrotask). */
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 8; i++) await Promise.resolve()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/**
+ * A manager holding ONE real stored suggestion for `sess-1`, seeded through
+ * the arm→fire chain (the factory reads manager state; the seed must be real
+ * so a leaking guard is observable as the stored text).
+ */
+async function seededManager(): Promise<NextPromptManager> {
+  const llm: AdvisorLlm = {
+    stream: () => (async function* () {
+      yield { type: 'text-delta', index: 0, text: 'stored suggestion' }
+    })(),
+  }
+  const manager = new NextPromptManager({
+    resolve: () => effective(),
+    llm: () => llm,
+    logger: { debug: () => {}, warn: () => {} },
+  })
+  const delta: Delta = { markdown: 'turn context', willContinue: false }
+  manager.onCompletedTurnEnd('sess-1')
+  manager.onDelta('sess-1', delta)
+  await settle()
+  expect(manager.getSuggestion('sess-1')).toEqual({ suggestion: 'stored suggestion' })
+  return manager
+}
+
+describe('suggestion face guard (advisorSuggestionFace factory, I-000024)', () => {
+  it('answers the empty suggestion for a session the override turned OFF — masked, not cleared', async () => {
+    const manager = await seededManager()
+    // The composed harness cannot reach `AdvisorSessionOverrides` (the
+    // override is command-path-only), so the off arm is exercised here with
+    // the session-scoped effective config `/advisor off` produces.
+    const face: AdvisorSuggestionFace = advisorSuggestionFace(
+      (sessionId) => (sessionId === 'sess-1' ? effective({ enabled: false }) : effective()),
+      manager,
+    )
+    expect(face.getSuggestion('sess-1')).toEqual({ suggestion: null })
+    // The stored value survives behind the mask (the face is read-only; a
+    // later `/advisor on` on the same state serves it again).
+    expect(manager.getSuggestion('sess-1')).toEqual({ suggestion: 'stored suggestion' })
+  })
+
+  it('serves the stored suggestion for a PINNED-pair session and a global session alike', async () => {
+    const manager = await seededManager()
+    // A pin is part of the effective config (provider/model ride it); the
+    // gate stays open, so the web read serves the stored text.
+    const face: AdvisorSuggestionFace = advisorSuggestionFace(
+      (sessionId) => (sessionId === 'sess-1'
+        ? effective({ provider: 'pinned-provider', model: 'pinned-model' })
+        : effective()),
+      manager,
+    )
+    expect(face.getSuggestion('sess-1')).toEqual({ suggestion: 'stored suggestion' })
+    // An off session on the SAME face stays masked — per-session scoping,
+    // not a global switch.
+    expect(face.getSuggestion('other-session')).toEqual({ suggestion: null })
+  })
+
+  it('still masks when the session-scoped resolver closes nextPrompt', async () => {
+    const manager = await seededManager()
+    const face: AdvisorSuggestionFace = advisorSuggestionFace(
+      (sessionId) => (sessionId === 'sess-1' ? effective({ nextPrompt: false }) : effective()),
+      manager,
+    )
+    expect(face.getSuggestion('sess-1')).toEqual({ suggestion: null })
   })
 })

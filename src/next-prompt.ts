@@ -10,9 +10,12 @@
  *
  * The prediction is strictly best-effort and fully decoupled from the review
  * chain: it never touches `AdvisorRuntime` or delivery state, every failure
- * (throw, deadline, empty/`NONE` reply) is a silent drop with a debug log, and
- * the per-session generation fence discards any result computed for a
- * superseded turn (a newer completed turn or a user turn start).
+ * (throw, deadline, empty/`NONE` reply) is a silent drop with a debug log, the
+ * SESSION-SCOPED effective config gates both the arm and the fire read (a
+ * `/advisor off` override or a session model pin is honored — I-000024), and
+ * the fence is bound to the per-session STATE IDENTITY — a manager-level
+ * token never reused after a `disposeSession`/rebuild (I-000026) — so any
+ * result computed for a superseded turn is discarded wholesale.
  *
  * @module dsh-advisor/next-prompt
  */
@@ -21,6 +24,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { AdvisorLlm, AdvisorRuntimeLogger } from './advisor-runtime.js'
+import type { AdvisorSuggestionFace } from './gateway.js'
 import type { ResolvedAdvisorConfig } from './config.js'
 import { DEFAULT_NEXT_PROMPT_SYSTEM_PROMPT } from './prompts.js'
 import type { Delta } from './transcript.js'
@@ -59,11 +63,15 @@ const MAX_ATTEMPTS = 2
 /** Options for one {@link NextPromptManager} (per-fiber, next to the runtimes map). */
 export interface NextPromptManagerOptions {
   /**
-   * Live resolved-config read (the resolver SSOT): consulted at arm time
+   * Live SESSION-SCOPED effective-config read (the resolver SSOT), keyed by
+   * the session the prediction chain acts for: consulted at arm time
    * (`onCompletedTurnEnd`) AND again at fire time (`onDelta`), so a config
-   * edit between the two can never start a gated prediction call.
+   * edit between the two can never start a gated prediction call. The
+   * wiring passes the session-aware `safeEffective` (the `/advisor on|off`
+   * override and the session model pin are folded in — I-000024); a global
+   * read here would let an off session keep predicting and ignore its pin.
    */
-  readonly resolve: () => ResolvedAdvisorConfig
+  readonly resolve: (sessionId: string) => ResolvedAdvisorConfig
   /** The llm service (`ctx.llm`), re-read per call; injectable for tests. */
   readonly llm: () => AdvisorLlm
   /** Logger seam (`ctx.logger('advisor')` satisfies it). */
@@ -74,12 +82,21 @@ export interface NextPromptManagerOptions {
 
 /** Per-session state: the armed slot, the fence generation, the stored text. */
 interface NextPromptSessionState {
+  /**
+   * The session state's identity token (I-000026): allocated once from the
+   * manager-level `nextStateId` counter — which survives `disposeSession`
+   * because it lives on the manager, not in the map entry — so a rebuilt
+   * same-id state NEVER reuses a predecessor's token and an in-flight
+   * prediction armed under the old token can never commit into it, even
+   * when the numeric generation restarts to the same value.
+   */
+  readonly id: number
   /** The single pending slot armed by `onCompletedTurnEnd`, consumed by `onDelta`. */
   pending: boolean
   /**
    * Fence generation (contract 3): bumped by every `onCompletedTurnEnd` and
-   * every `onUserTurnStart`; an in-flight prediction result whose generation
-   * no longer matches is discarded wholesale.
+   * every `onUserTurnStart`; an in-flight prediction result whose state id
+   * or generation no longer matches is discarded wholesale.
    */
   generation: number
   /** The stored single-line suggestion, or null. */
@@ -195,6 +212,12 @@ function raceIteratorNext<T>(
  */
 export class NextPromptManager {
   private readonly sessions = new Map<string, NextPromptSessionState>()
+  /**
+   * Manager-level state-id allocator (I-000026): monotonically increasing,
+   * NEVER reset by `disposeSession`/`disposeAll` — a rebuilt same-id session
+   * always gets a fresh token, invalidating every prediction armed before.
+   */
+  private nextStateId = 0
   private readonly callTimeoutMs: number
 
   constructor(private readonly options: NextPromptManagerOptions) {
@@ -210,7 +233,7 @@ export class NextPromptManager {
   onCompletedTurnEnd(sessionId: string): void {
     const state = this.stateFor(sessionId)
     state.generation += 1
-    const config = this.resolveConfig()
+    const config = this.resolveConfig(sessionId)
     state.pending = config.enabled && config.nextPrompt
   }
 
@@ -224,12 +247,11 @@ export class NextPromptManager {
     const state = this.sessions.get(sessionId)
     if (state === undefined || !state.pending) return
     state.pending = false
-    const config = this.resolveConfig()
+    const config = this.resolveConfig(sessionId)
     if (!config.enabled || !config.nextPrompt) return
     // `enabled` guarantees the pair (S4 gate) — the same non-null reads the
     // runtime construction in `index.ts` performs behind the same gate.
-    const generation = state.generation
-    void this.predict(sessionId, generation, delta.markdown, config.provider!, config.model!)
+    void this.predict(sessionId, state.id, state.generation, delta.markdown, config.provider!, config.model!)
   }
 
   /**
@@ -262,20 +284,21 @@ export class NextPromptManager {
   private stateFor(sessionId: string): NextPromptSessionState {
     let state = this.sessions.get(sessionId)
     if (state === undefined) {
-      state = { pending: false, generation: 0, suggestion: null }
+      // A fresh token per creation (I-000026): the allocator never rewinds.
+      state = { id: this.nextStateId++, pending: false, generation: 0, suggestion: null }
       this.sessions.set(sessionId, state)
     }
     return state
   }
 
   /**
-   * The resolver read with qc2 W-1 containment: a throwing resolver must
-   * never break the session/event hot path, so a failed read fails CLOSED
-   * (no arm, no prediction call).
+   * The per-session resolver read with qc2 W-1 containment: a throwing
+   * resolver must never break the session/event hot path, so a failed read
+   * fails CLOSED (no arm, no prediction call).
    */
-  private resolveConfig(): ResolvedAdvisorConfig {
+  private resolveConfig(sessionId: string): ResolvedAdvisorConfig {
     try {
-      return this.options.resolve()
+      return this.options.resolve(sessionId)
     } catch (error) {
       this.options.logger.debug('advisor: next-prompt config read failed — prediction skipped', {
         error,
@@ -285,13 +308,27 @@ export class NextPromptManager {
   }
 
   /**
-   * Fire-and-forget prediction for one generation (contract 4): at most one
+   * Whether the addressed session state is still the one a prediction was
+   * armed under: the fence compares BOTH the state-identity token (I-000026
+   * — a same-id dispose/rebuild always allocates a new token, so an older
+   * in-flight result can never pass) AND the numeric generation (a newer
+   * completed turn or user turn start on the SAME state supersedes).
+   */
+  private isCurrent(sessionId: string, stateId: number, generation: number): boolean {
+    const state = this.sessions.get(sessionId)
+    return state !== undefined && state.id === stateId && state.generation === generation
+  }
+
+  /**
+   * Fire-and-forget prediction for one armed state (contract 4): at most one
    * immediate lightweight retry, every failure a silent debug drop, and a
    * fence re-check before every attempt AND before the commit — a result
-   * computed for a superseded generation is discarded wholesale (contract 3).
+   * computed for a superseded state (identity OR generation, `isCurrent`)
+   * is discarded wholesale (contract 3).
    */
   private async predict(
     sessionId: string,
+    stateId: number,
     generation: number,
     context: string,
     provider: string,
@@ -299,7 +336,7 @@ export class NextPromptManager {
   ): Promise<void> {
     let text: string | undefined
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      if (this.sessions.get(sessionId)?.generation !== generation) return // superseded
+      if (!this.isCurrent(sessionId, stateId, generation)) return // superseded
       const raw = await this.callOnce(context, provider, model)
       text = raw === undefined ? undefined : shapeNextPrompt(raw)
       if (text !== undefined) break
@@ -310,9 +347,8 @@ export class NextPromptManager {
       this.options.logger.debug('advisor: next-prompt prediction dropped', { sessionId })
       return
     }
-    const state = this.sessions.get(sessionId)
-    if (state === undefined || state.generation !== generation) return // superseded mid-flight
-    state.suggestion = text
+    if (!this.isCurrent(sessionId, stateId, generation)) return // superseded mid-flight
+    this.sessions.get(sessionId)!.suggestion = text
   }
 
   /**
@@ -361,5 +397,34 @@ export class NextPromptManager {
       // An ordinary conversation request — `purpose` stays unset, like the
       // review call (KD-5).
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Suggestion read face (the gateway's `AdvisorSuggestionFace`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the elected owner's read-only suggestion face (plan
+ * dsh-advisor-next-prompt-n12, T2 — I-000024): the SAME manager the observer
+ * feeds, gated by the SESSION-SCOPED resolver on every read. A closed gate
+ * (`!enabled` — a `/advisor off` session, or an S4-blocked one — or
+ * `!nextPrompt`) answers the empty suggestion WITHOUT consulting the
+ * manager, so no stale stored value can leak past a session-scoped flip;
+ * an open gate serves the stored text (a pinned-pair session included — the
+ * pinned pair rides `enabled`, so the suggestion reaches the web surface).
+ * The wiring passes its `safeEffective` wrapper, so a throwing resolver
+ * stays contained there; this factory adds no second error layer.
+ */
+export function advisorSuggestionFace(
+  resolve: (sessionId: string) => ResolvedAdvisorConfig,
+  manager: NextPromptManager,
+): AdvisorSuggestionFace {
+  return {
+    getSuggestion(sessionId) {
+      const config = resolve(sessionId)
+      if (!config.enabled || !config.nextPrompt) return { suggestion: null }
+      return manager.getSuggestion(sessionId)
+    },
   }
 }

@@ -480,8 +480,10 @@ describe('AdvisorCard flat layout (official settings-page language)', () => {
     expect(screen.getByText(en.proseFallbackHint)).toBeTruthy()
     // The proseFallback and nextPrompt toggles are the card's checkboxes
     // (the config-level `enabled` switch is gone — the row toggle is the
-    // master switch).
-    expect(view.container.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
+    // master switch). Product query by role/label, not a wiring count
+    // (I-000029): the nextPrompt toggle exists and is a checkbox.
+    const nextPromptToggle = screen.getByRole('checkbox', { name: en.nextPrompt })
+    expect((nextPromptToggle as HTMLInputElement).type).toBe('checkbox')
   })
 
   it('renders nothing while the first load is in flight (no chrome to hold the space)', async () => {

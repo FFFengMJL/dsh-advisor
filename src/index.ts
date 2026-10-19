@@ -67,7 +67,7 @@ import { AdvisorRuntime } from './advisor-runtime.js'
 import type { AdviceNote } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
-import { NextPromptManager } from './next-prompt.js'
+import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { AdvisorSessionOverrides, registerAdvisorCommands, summarizeSystemPrompt, ADVISOR_MODEL_VALIDATION_TIMEOUT_MS } from './commands.js'
 import type {
@@ -367,12 +367,16 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   const runtimes = new Map<string, AdvisorRuntime>()
   // Next-prompt predictor (plan dsh-advisor-next-prompt-n12, T1): one per
   // fiber, next to the runtimes map. The gate re-reads the resolver SSOT on
-  // every arm/fire (safeResolved — the throwing resolver must not break the
-  // event hot path, qc2 W-1), the llm seam is the same app-root service the
-  // review calls use, and the prediction chain is fully decoupled from the
-  // review runtimes (no shared state; a failing prediction drops silently).
+  // every arm/fire through the SESSION-SCOPED effective config (I-000024 —
+  // `safeEffective` folds in the `/advisor on|off` override and the session
+  // model pin; a global read would let an off session keep predicting and
+  // ignore its pin). The throwing-resolver containment lives in the manager
+  // (qc2 W-1 — a failed read fails closed), the llm seam is the same
+  // app-root service the review calls use, and the prediction chain is fully
+  // decoupled from the review runtimes (no shared state; a failing
+  // prediction drops silently).
   const suggestions = new NextPromptManager({
-    resolve: () => safeResolved(),
+    resolve: (sessionId) => effectiveConfig(sessionId),
     llm: () => appRootLlm(),
     logger: ctx.logger('advisor'),
   })
@@ -986,19 +990,15 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // T2 (plan dsh-advisor-next-prompt-n12): the elected owner's suggestion
   // face — the web read of the SAME `suggestions` manager the observer feeds
   // (one state store, no divergence). The switch is re-read through the
-  // resolver SSOT on every request: a freshly-resolved config with
-  // `nextPrompt: false`, or a blocked S4 gate (`enabled: false`), answers
-  // the empty suggestion WITHOUT consulting the manager — no stale stored
-  // value can leak past a config flip (the same gate the manager applies on
-  // arm/fire). Read-only: the face never mutates manager state.
-  const suggestionControlFace: AdvisorSuggestionFace = {
-    getSuggestion(sessionId) {
-      const config = safeResolved()
-      if (!config.enabled || !config.nextPrompt) return { suggestion: null }
-      return suggestions.getSuggestion(sessionId)
-    },
-  }
-  suggestionControl = suggestionControlFace
+  // resolver SSOT on every request through the SESSION-SCOPED effective
+  // config (I-000024): a `/advisor off` override, an S4-blocked gate, or a
+  // `nextPrompt: false` read answers the empty suggestion WITHOUT consulting
+  // the manager — no stale stored value can leak past a config flip — while
+  // an open gate (a pinned-pair session included) serves the stored text
+  // (the same gate the manager applies on arm/fire). The shared factory is
+  // unit-tested in tests/gateway-suggestion.test.ts; read-only: the face
+  // never mutates manager state.
+  suggestionControl = advisorSuggestionFace(effectiveConfig, suggestions)
 
   // T7: the command child activates ONLY when a command registry is composed
   // (conditional child activation — `commands` must NOT join the top-level
