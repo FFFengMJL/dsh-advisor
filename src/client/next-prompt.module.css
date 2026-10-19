@@ -18,7 +18,6 @@
    focus, it only previews the suggested prompt. */
 .ghost {
   position: absolute;
-  inset: 4px 8px auto 12px;
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -30,20 +29,31 @@
      trigger hover outline) and that alias is light/dark adaptive, so the bar
      reads as intentional in both themes; the fallback degrades to the host's
      standard border token if the alias is ever renamed. The 2px bar occupies
-     12→14px and the content starts at 14px — exactly the host placeholder
-     text column — so text/badge vertical geometry is unchanged. */
-  /* Opaque fusion + stacking: paint the backdrop with the SAME token the host
-     uses for the composer card itself (.uV2eYG_card background:
-     var(--dsw-specific-input-major) — light --dsw-static-neutral-bluish-00,
-     dark --dsw-static-neutral-bluish-850, both opaque), so the backdrop is
-     indistinguishable from the card. The host placeholder
-     (.uV2eYG_placeholder) sits at the SAME position with NO z-index and
-     paints after this element in DOM order — z-index: 1 lifts the backdrop
-     above it (same stacking context; far below the host's interactive
-     overlays at 1100). Text geometry (font/line-height/inset) is untouched
-     and the line box is exactly the placeholder row. */
+     12→14px and padding-left keeps a 4px gap before the content (starts at
+     18px); the right inset drops 8→4px so the usable text width is unchanged.
+     Vertically the backdrop spans the card's full top (inset-top 0) with
+     padding-top 4px pinning the text to the editor's first line (geometry
+     identical to the previous inset-top 4px) and padding-bottom extending
+     the backdrop ~6px past the text line to cover the host placeholder tail. */
+  /* Slightly distinct surface: instead of the exact card token, mix in 5% of
+     the same accent the left bar uses over var(--dsw-specific-input-major)
+     (the composer card background), so the backdrop reads as "one level above
+     the card" — a faint accent tint that follows the theme tokens
+     (dsh dark mode is prefers-color-scheme driven) while staying subtle, and
+     still paints OVER the host placeholder (.uV2eYG_placeholder, same
+     position, no z-index, later in DOM order — z-index: 1 lifts this element
+     above it; far below the host's interactive overlays at 1100). Text
+     geometry (font/line-height/padding-derived offsets) is untouched and the
+     line box is exactly the placeholder row. */
   z-index: 1;
-  background: var(--dsw-specific-input-major);
+  inset: 0 4px auto 12px;
+  padding: 4px 0 6px;
+  padding-left: 4px;
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-state-business-primary, var(--dsw-static-neutral-bluish-850)) 5%,
+    var(--dsw-specific-input-major)
+  );
   border-left: 2px solid var(--dsw-alias-state-business-primary, var(--dsw-alias-border-l2));
   font-size: inherit;
   line-height: inherit;
