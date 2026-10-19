@@ -13,9 +13,15 @@
  *    `{ suggestion: string | null }` shape; the wiring short-circuits to
  *    `{ suggestion: null }` in data (never an error) when the freshly
  *    resolved config closes the gate (S4 blocked) or reads
- *    `nextPrompt: false` — without consulting the manager. Non-default-value
- *    round-trip evidence stays in T1's config cases (config-key checklist
- *    seam 2); the prediction chain itself is T1's covered behavior.
+ *    `nextPrompt: false` — without consulting the manager. That
+ *    short-circuit is also DISCRIMINATINGLY covered (qc1 W-1): one composed
+ *    case seeds a real stored suggestion through the full wiring (completed
+ *    turn arm → delta fire → shaped fake-llm reply) and proves the open
+ *    gate serves it while the SAME seeded state answers null the moment the
+ *    config flips `nextPrompt` off — deleting the guard turns that case
+ *    red. Non-default-value round-trip evidence stays in T1's config cases
+ *    (config-key checklist seam 2); the prediction chain itself is T1's
+ *    covered behavior.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -24,6 +30,7 @@ import { MemoryEntryConfig, harnessAdvisorPlugin } from './support/memory-settin
 import { ownerPeer, provideRemoteAccess } from './support/typert-gateway'
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { installAdvisorSettings } from '../src/settings'
 import { AdvisorConfigGateway } from '../src/gateway'
 import type { AdvisorSuggestionFace, AdvisorSuggestionRpcResult } from '../src/gateway'
@@ -97,24 +104,35 @@ describe('advisor suggestion endpoint (unit, scripted face)', () => {
 
 interface Harness {
   ctx: Context
+  /** The entry-config handle the Loader stand-in commits volatile patches through. */
+  memory: MemoryEntryConfig
 }
 
-/** Compose the real plugin over the given entry config (mirrors gateway-session). */
-async function compose(entry: AdvisorConfig = entryConfig()): Promise<Harness> {
+/** Default composed llm: no usable stream (predictions drop, reviews fail silently). */
+function inertLlm(): unknown {
+  return { stream: async () => {}, resolveModelInfo: async () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+}
+
+/**
+ * Compose the real plugin over the given entry config (mirrors
+ * gateway-session). `llm` swaps the composed llm seam — the seeded case
+ * hands in a stream that yields one text-delta reply so the REAL
+ * NextPromptManager wiring can store a prediction.
+ */
+async function compose(entry: AdvisorConfig = entryConfig(), llm: unknown = inertLlm()): Promise<Harness> {
   const ctx = new Context()
   await ctx.plugin(TypertRegistry)
   await ctx.plugin(TypertGatewayService)
   provideRemoteAccess(ctx)
   ctx.provide('sessions', {} as never)
-  const resolveModelInfo = vi.fn(async () => ({ provider: 'deepseek', model: 'deepseek-chat' }))
   ctx.provide('agents', { get: () => undefined } as never)
-  ctx.provide('llm', { stream: async () => {}, resolveModelInfo } as never)
+  ctx.provide('llm', llm as never)
   const memory = new MemoryEntryConfig(entry)
   await ctx.plugin(harnessAdvisorPlugin(), memory.config)
   await vi.waitFor(() => {
     expect(ctx.reflect.props['advisor']).toEqual({ type: 'service' })
   })
-  return { ctx }
+  return { ctx, memory }
 }
 
 describe('composed suggestion endpoint (apply wiring)', () => {
@@ -143,5 +161,50 @@ describe('composed suggestion endpoint (apply wiring)', () => {
       namespace: 'advisor', method: 'suggestion', args: { sessionId: 'sess-1' }, peer: ownerPeer(ctx),
     })
     expect(result).toEqual({ suggestion: null })
+  })
+
+  it('serves a seeded stored suggestion while the gate is open, and masks the SAME value once nextPrompt flips off', async () => {
+    // The qc1 W-1 regression: every other composed case asserts null over an
+    // EMPTY manager, so deleting the gate short-circuit kept the suite green.
+    // Here the manager holds a REAL stored suggestion (driven through the
+    // full wiring), which makes the guard the only thing standing between
+    // the wire answer and the stored text once the config flips.
+    const seeded = 'run pnpm vitest run tests/gateway-suggestion.test.ts'
+    const seededLlm = {
+      stream: () => (async function* () {
+        yield { type: 'text-delta', index: 0, text: seeded }
+      })(),
+      resolveModelInfo: async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    }
+    const { ctx, memory } = await compose(entryConfig({ provider: 'deepseek', model: 'deepseek-chat', nextPrompt: true }), seededLlm)
+
+    // Seed through the real wiring (integration-suite event shape): one
+    // completed primary turn arms the slot, the turn's rendered delta is the
+    // prediction context, and the fake llm reply is shaped and stored by the
+    // NextPromptManager the gateway face reads.
+    const log = [
+      { type: 'user/message', seq: 0, time: 0, data: { id: 'u0', role: 'user', content: [], source: { kind: 'user' } } },
+      { type: 'assistant/message', seq: 1, time: 0, data: { turn: 1, step: 1, message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'wrote a test' }], source: { kind: 'model', provider: 'deepseek', model: 'deepseek-chat' } } }, surfaceOp: 'append' },
+      { type: 'step/start', seq: 2, time: 0, data: { turn: 1, step: 1 } },
+      { type: 'turn/end', seq: 3, time: 0, data: { turn: 1, reason: { kind: 'completed' } } },
+    ] as unknown as SessionEvent[]
+    const session = { id: 'sess-1', snapshotEvents: () => log } as unknown as Session
+    ctx.emit('session/event', session, log[3]!)
+    const invoke = (): Promise<unknown> => ctx.typertGateway.invoke({
+      namespace: 'advisor', method: 'suggestion', args: { sessionId: 'sess-1' }, peer: ownerPeer(ctx),
+    })
+
+    // (a) Gate open (`nextPrompt: true`): the endpoint serves the seeded text.
+    await vi.waitFor(async () => {
+      expect(await invoke()).toEqual({ suggestion: seeded })
+    })
+
+    // (b) The SAME seeded state after a live config flip (`nextPrompt:
+    //     false`): the short-circuit answers the empty suggestion WITHOUT
+    //     consulting the manager — which still holds the text, so deleting
+    //     the guard turns exactly this case red.
+    memory.commit(ctx, { nextPrompt: false })
+    await Promise.resolve() // let the Loader stand-in's volatile-update re-apply settle
+    expect(await invoke()).toEqual({ suggestion: null })
   })
 })

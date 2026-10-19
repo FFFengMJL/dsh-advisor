@@ -9,19 +9,22 @@
  *
  * Render gate: the ghost renders ONLY while a suggestion waits
  * (`suggestion !== null`) on an EMPTY draft (`draft === ''`) in the plain
- * phase (`phase === 'plain'`). Any other state renders nothing and unmounts
- * the document-level keydown listener (it exists only while the ghost does),
- * so a bare ArrowRight keeps its native semantics everywhere else.
+ * phase (`phase === 'plain'`). Any other state renders nothing.
  *
  * Fill contract: a document-level CAPTURE-phase keydown intercepts ONLY a
- * bare ArrowRight (alt/ctrl/meta/shift all false) while the gate holds and
- * the event target is not an editable outside the composer card — the
- * composer's own editor lives inside the same `div[data-composer-card]` as
- * the overlay anchor, so a target within that card is the expected fill
- * target, while a focused input/textarea/contenteditable elsewhere keeps
- * native behavior. On intercept: `preventDefault()`, then
- * `inputActions.setDraft(suggestion)`, then the optimistic local clear
- * (suggestion → null) so the ghost disappears the moment the draft fills.
+ * bare ArrowRight (alt/ctrl/meta/shift all false) whose target is the
+ * no-focus surface (document/body/html — nothing focused) or inside the
+ * composer card (the composer's own editor lives inside the same
+ * `div[data-composer-card]` as the overlay anchor). Any FOCUSED element
+ * elsewhere — tree nodes, buttons, menus, editables — keeps native
+ * ArrowRight semantics (qc2 F-001). The render gate itself is re-validated
+ * INSIDE the handler against the latest render's input snapshot: in the
+ * React commit→passive-effect window a non-empty draft (or a moved phase)
+ * passes through natively, no preventDefault, no fill — the listener that
+ * is still mounted cannot replace user-typed text (qc2 F-002). On
+ * intercept: `preventDefault()`, then `inputActions.setDraft(suggestion)`,
+ * then the optimistic local clear (suggestion → null) so the ghost
+ * disappears the moment the draft fills.
  *
  * Fetch discipline: fetch on mount, on every consumed refresh-signal epoch
  * bump (connection/reset + window focus ride the plugin's shared debounced
@@ -74,25 +77,27 @@ export type NextPromptOverlayProps =
 
 /**
  * Whether one keydown event is the fill trigger: a bare ArrowRight (no
- * modifiers) whose target is not an editable element outside the composer
- * card. The card boundary comes from the component's own DOM root — the
- * host renders the overlay anchor inside `div[data-composer-card]`, so a
- * target within THAT card is the composer's own editor surface; any
- * input/textarea/contenteditable elsewhere keeps native semantics.
+ * modifiers) whose target sits in the NO-FOCUS surface or inside the
+ * composer card. The card boundary comes from the component's own DOM root —
+ * the host renders the overlay anchor inside `div[data-composer-card]`, so a
+ * target within THAT card is the composer's own editor surface. Outside the
+ * card, the interceptor claims only the surface a browser targets when NO
+ * element has focus (document / body / html): every FOCUSED element
+ * elsewhere — tree nodes, buttons, menus, editables — keeps its native
+ * ArrowRight semantics (qc2 F-001 narrowed the previous draft that hijacked
+ * any focused non-editable target).
  */
 function isFillTrigger(event: KeyboardEvent, overlayRoot: Element | null): boolean {
   if (event.key !== 'ArrowRight') return false
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false
   const target = event.target
-  if (!(target instanceof Element)) return true // no target element (e.g. dispatched on document) → composer surface
+  if (!(target instanceof Element)) return true // no target element (e.g. dispatched on document) → no-focus surface
   const card = overlayRoot?.closest('[data-composer-card]')
   if (card !== undefined && card !== null && card.contains(target)) return true
-  // Outside the composer card: an editable target keeps native behavior.
-  // (Attribute-based check, not HTMLElement.isContentEditable — jsdom does
-  // not implement that property.)
-  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return false
-  if (target.closest('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]') !== null) return false
-  return true
+  // Outside the card: only the no-focus surface (nothing focused) fills.
+  // A focused element is always its own keydown target, so any specific
+  // focused element — editable or not — falls through to native behavior.
+  return target === document.body || target === document.documentElement
 }
 
 /**
@@ -132,13 +137,30 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
     return () => { window.clearInterval(timer) }
   }, [controller, idle])
 
-  // Document-level capture-phase fill listener — mounted ONLY while the
-  // ghost renders (the gate unmounts it, restoring native ArrowRight
-  // semantics everywhere else).
+  // The input snapshot as the latest render read it, re-written on every
+  // render (the render itself just consumed the store through useInput).
+  // The keydown handler below reads THIS at event time: in the React
+  // commit→passive-effect window a draft/phase update is already committed
+  // and rendered while the previous listener is still mounted, and the
+  // handler's closure can be a render behind — this ref is not (qc2 F-002).
+  const inputRef = useRef(input)
+  inputRef.current = input
+
+  // Document-level capture-phase fill listener. Mounted while a suggestion
+  // waits; the RENDER gate (empty draft, plain phase) is re-validated inside
+  // the handler at event time, so the listener surviving the commit→
+  // passive-effect teardown window can never fill over user-typed text
+  // (qc2 F-002).
   useEffect(() => {
-    if (!showGhost || suggestion === null) return
+    if (suggestion === null) return
     const onKeyDown = (event: KeyboardEvent): void => {
       if (!isFillTrigger(event, rootRef.current)) return
+      // Re-validate the render gate against the CURRENT input snapshot:
+      // skip WITHOUT preventDefault when the draft is no longer empty or
+      // the phase left plain — native ArrowRight semantics (caret motion)
+      // apply instead of a fill that would replace user-typed text.
+      const current = inputRef.current
+      if (current.draft !== '' || current.phase !== 'plain') return
       event.preventDefault()
       inputActions.setDraft(suggestion)
       // Optimistic local clear: the ghost disappears the moment the draft
@@ -147,7 +169,7 @@ export function NextPromptOverlay(props: NextPromptOverlayProps): ReactNode {
     }
     document.addEventListener('keydown', onKeyDown, true)
     return () => { document.removeEventListener('keydown', onKeyDown, true) }
-  }, [controller, inputActions, showGhost, suggestion])
+  }, [controller, inputActions, suggestion])
 
   if (!showGhost || suggestion === null) return null
   return (

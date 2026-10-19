@@ -15,14 +15,18 @@
  *
  * Contract under test (brief behavior contract, one case per bullet):
  * ① render gate: ghost renders ONLY when suggestion !== null && draft === ''
- *    && phase === 'plain'; otherwise nothing renders and the keydown
- *    listener is unmounted (a fill attempt intercepts nothing).
+ *    && phase === 'plain'; otherwise nothing renders, and a fill attempt
+ *    intercepts nothing (the fill handler re-validates this gate — see ③).
  * ② ghost presentation: the suggestion text renders, plus the "⇥" badge
  *    carrying `aria-label={t('nextPromptBadge')}`.
  * ③ ArrowRight fill: a document-level capture-phase keydown intercepts ONLY
- *    a bare ArrowRight (no modifiers) while the gate holds and the target is
- *    not an editable outside the composer card; on intercept:
- *    preventDefault + inputActions.setDraft(suggestion).
+ *    a bare ArrowRight (no modifiers) whose target is the no-focus surface
+ *    (document/body — nothing focused) or inside the composer card; a
+ *    focused element elsewhere (tree node, button, editable) keeps native
+ *    semantics. The render gate is re-validated INSIDE the handler against
+ *    the latest input snapshot (the commit→passive-effect window must not
+ *    fill over user-typed text). On intercept: preventDefault +
+ *    inputActions.setDraft(suggestion).
  * ④ fill clears local state optimistically (suggestion → null) so the ghost
  *    disappears the moment the draft fills.
  * ⑤ fetch points: mount; every consumed refresh-signal epoch bump; and the
@@ -252,6 +256,78 @@ describe('next-prompt ghost overlay (plan dsh-advisor-next-prompt-n12, task 3)',
     render(<div contentEditable data-testid="elsewhere" />)
     expect(fireEvent.keyDown(screen.getByTestId('elsewhere'), { key: 'ArrowRight' })).toBe(true)
     expect(h.setDraft).not.toHaveBeenCalled()
+  })
+
+  it('keeps native ArrowRight on a focused button outside the card, and still fills for a target inside it', async () => {
+    const h = harness()
+    const view = render(
+      <ComposerCard>
+        <button data-testid="card-button" />
+        <NextPromptOverlay {...h.props} />
+      </ComposerCard>,
+    )
+    await waitFor(() => expect(h.rpc.calls).toHaveLength(1))
+    h.rpc.settle(ok({ suggestion: SUGGESTION }))
+    await waitFor(() => expect(h.controller.store.getSnapshot().status).toBe('ready'))
+    view.rerender(
+      <ComposerCard>
+        <button data-testid="card-button" />
+        <NextPromptOverlay {...h.props} />
+      </ComposerCard>,
+    )
+
+    // A focused plain button OUTSIDE the card keeps its native ArrowRight
+    // semantics (tree nodes / menus / buttons navigate): no preventDefault,
+    // no fill (qc2 F-001 counter-case).
+    render(<button data-testid="elsewhere-button" />)
+    const outside = screen.getByTestId('elsewhere-button')
+    outside.focus()
+    expect(document.activeElement).toBe(outside)
+    expect(fireEvent.keyDown(outside, { key: 'ArrowRight' })).toBe(true)
+    expect(h.setDraft).not.toHaveBeenCalled()
+
+    // The SAME kind of focused target INSIDE the card is the composer's own
+    // surface: intercepted exactly as before (qc2 F-001 counter-case pair).
+    const inside = screen.getByTestId('card-button')
+    inside.focus()
+    expect(fireEvent.keyDown(inside, { key: 'ArrowRight' })).toBe(false)
+    expect(h.setDraft).toHaveBeenCalledTimes(1)
+    expect(h.setDraft).toHaveBeenCalledWith(SUGGESTION)
+  })
+
+  it('re-validates the render gate at handler time: a draft that just became non-empty passes ArrowRight through natively', async () => {
+    const h = harness()
+    const view = await mountWithSuggestion(h)
+
+    // The stale window (qc2 F-002): the fill listener is mounted, and the
+    // input snapshot has moved on (the user typed) while the effect teardown
+    // trails the commit. The handler must re-read the CURRENT snapshot and
+    // pass the key through — no preventDefault, no fill, nothing consumed.
+    h.input.update((s) => { s.draft = 'user-typed' })
+    view.rerender(
+      <ComposerCard>
+        <NextPromptOverlay {...h.props} />
+      </ComposerCard>,
+    )
+    expect(screen.queryByText(SUGGESTION)).toBeNull()
+    const stale = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+    document.dispatchEvent(stale)
+    expect(stale.defaultPrevented).toBe(false)
+    expect(h.setDraft).not.toHaveBeenCalled()
+    expect(h.controller.store.getSnapshot().suggestion).toBe(SUGGESTION)
+
+    // Gate restored: the SAME still-mounted listener fills again — the skip
+    // above came from the re-validated gate, not from a missing listener.
+    h.input.update((s) => { s.draft = '' })
+    view.rerender(
+      <ComposerCard>
+        <NextPromptOverlay {...h.props} />
+      </ComposerCard>,
+    )
+    const fill = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+    document.dispatchEvent(fill)
+    expect(fill.defaultPrevented).toBe(true)
+    expect(h.setDraft).toHaveBeenCalledWith(SUGGESTION)
   })
 
   it('treats the composer card editor as the fill target (a keydown inside the card intercepts)', async () => {

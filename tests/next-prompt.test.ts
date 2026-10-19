@@ -16,9 +16,11 @@
  * 4. Best-effort — fire-and-forget with its own dsh-timeout `deadline`; at
  *    most ONE lightweight retry within the same generation; every failure
  *    (throw, deadline, empty/`NONE` reply) is a silent drop with a debug log.
- * 5. Shaping — strip surrounding quotes/backticks/code fences, collapse
- *    whitespace runs to single spaces, reject the empty result, hard-truncate
- *    to `NEXT_PROMPT_MAX_CHARS`; the stored text is always single-line.
+ * 5. Shaping — strip C0 control characters (keeping whitespace), strip
+ *    surrounding quotes/backticks/code fences, collapse whitespace runs to
+ *    single spaces, reject the empty result, truncate to
+ *    `NEXT_PROMPT_MAX_CHARS` CODE POINTS (never splitting a surrogate pair);
+ *    the stored text is always single-line.
  * 6. Reads — `getSuggestion` returns `{ suggestion: null }` for a session
  *    with no stored text; per-session state is dropped by `disposeSession` /
  *    `disposeAll`.
@@ -446,6 +448,16 @@ describe('shaping (contract 5)', () => {
     ['   ', null],
     ['', null],
     ['a'.repeat(130), 'a'.repeat(120)],
+    // C0 control characters (qc2 F-003): NUL-range and ESC/BS are stripped,
+    // while whitespace C0 (\r) survives as the collapsed single space.
+    ['fix\x1B[31mthe\x08\rbug', 'fix[31mthe bug'],
+    // Truncation lands on a code-point boundary: 119 ASCII + one rocket is
+    // exactly 120 code points (121 UTF-16 units) — kept whole, where a
+    // unit-boundary slice would store the rocket's lone high surrogate.
+    [`${'a'.repeat(119)}🚀`, `${'a'.repeat(119)}🚀`],
+    // The cap counts code points: 200 rockets truncate to 120 rockets (240
+    // UTF-16 units), not to 120 units.
+    ['🚀'.repeat(200), '🚀'.repeat(120)],
   ]
 
   it.each(shapingCases)('stores the shaped single-line suggestion for %j', async (raw, expected) => {
@@ -457,6 +469,25 @@ describe('shaping (contract 5)', () => {
     await settle()
 
     expect(manager.getSuggestion('s')).toEqual({ suggestion: expected })
+  })
+
+  it('truncates an emoji-heavy reply at a code-point boundary — never a lone surrogate (qc2 F-003)', async () => {
+    const llm = new FakeLlm([{ chunks: textReply(`${'a'.repeat(119)}🚀🚀🚀`) }])
+    const { manager } = makeManager(llm)
+
+    manager.onCompletedTurnEnd('s')
+    manager.onDelta('s', delta('### Session update\n\n**agent**: did work'))
+    await settle()
+
+    const stored = manager.getSuggestion('s').suggestion
+    expect(stored).not.toBeNull()
+    // 120 code points — the cap counts characters, not UTF-16 units.
+    expect(Array.from(stored!)).toHaveLength(120)
+    // The astral character at the old unit boundary (119 a's + 1 unit into
+    // the first rocket) is kept WHOLE: the stored text ends on the intact
+    // pair, and no high/low surrogate is unpaired anywhere.
+    expect(stored!.endsWith('🚀')).toBe(true)
+    expect(stored).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
   })
 })
 

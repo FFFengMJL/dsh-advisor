@@ -31,8 +31,10 @@ import type { Delta } from './transcript.js'
 
 /**
  * Hard cap for one stored/served next-prompt suggestion (contract 5): the
- * text is always single-line and never longer than this — a verbose/rogue
- * predictor reply must not grow the web surface (T3) unboundedly.
+ * text is always single-line and never longer than this — counted in CODE
+ * POINTS, not UTF-16 code units (an astral emoji is one character, two
+ * units; qc2 F-003). A verbose/rogue predictor reply must not grow the web
+ * surface (T3) unboundedly.
  */
 export const NEXT_PROMPT_MAX_CHARS = 120
 
@@ -96,16 +98,27 @@ interface NextPromptSessionState {
 const SURROUNDING_FENCE_PATTERN = /^```[^\n]*\n([\s\S]*?)\n?```$/
 
 /**
+ * C0 control characters EXCEPT the whitespace ones (`\t` `\n` `\v` `\f` `\r`,
+ * U+0009–U+000D — they are `\s`, so the whitespace collapse below normalizes
+ * them into the single-line shape). The stripped remainder (NUL, backspace,
+ * ESC, …) has no place in a user-visible suggestion and could spoof fence or
+ * quote boundaries during shaping.
+ */
+const C0_CONTROL_PATTERN = /[\u0000-\u0008\u000E-\u001F]/g
+
+/**
  * Shape one predictor reply into the stored single-line suggestion (contract
- * 5): trim → strip ONE surrounding code fence → strip ONE layer of surrounding
- * quotes/backticks → collapse every whitespace run (newlines included) to
- * single spaces → reject the empty result and the literal `NONE` (the
- * "nothing predictable" marker the system prompt pins) → hard-truncate to
- * {@link NEXT_PROMPT_MAX_CHARS}. Returns `undefined` for a dropped reply.
- * Never throws.
+ * 5): strip C0 control characters (keeping whitespace) → trim → strip ONE
+ * surrounding code fence → strip ONE layer of surrounding quotes/backticks →
+ * collapse every whitespace run (newlines included) to single spaces → reject
+ * the empty result and the literal `NONE` (the "nothing predictable" marker
+ * the system prompt pins) → truncate to {@link NEXT_PROMPT_MAX_CHARS} CODE
+ * POINTS (never a UTF-16 slice: a unit-boundary cut could split a surrogate
+ * pair and store a lone surrogate that renders as U+FFFD). Returns
+ * `undefined` for a dropped reply. Never throws.
  */
 function shapeNextPrompt(raw: string): string | undefined {
-  let text = raw.trim()
+  let text = raw.replace(C0_CONTROL_PATTERN, '').trim()
   const fence = SURROUNDING_FENCE_PATTERN.exec(text)
   if (fence !== null) text = fence[1]!.trim()
   if (text.length >= 2) {
@@ -126,7 +139,11 @@ function shapeNextPrompt(raw: string): string | undefined {
   // Case-insensitive: the prompt pins the literal `NONE`, but a lowercase
   // "none" means the same nothing-predictable signal.
   if (text.toUpperCase() === 'NONE') return undefined
-  return text.length > NEXT_PROMPT_MAX_CHARS ? text.slice(0, NEXT_PROMPT_MAX_CHARS) : text
+  // Code-point truncation: count code points, not UTF-16 code units, so a
+  // surrogate pair (any astral character, e.g. an emoji) is never split —
+  // a unit-boundary cut would store a lone surrogate that renders as U+FFFD.
+  const points = Array.from(text)
+  return points.length > NEXT_PROMPT_MAX_CHARS ? points.slice(0, NEXT_PROMPT_MAX_CHARS).join('') : text
 }
 
 // ---------------------------------------------------------------------------
