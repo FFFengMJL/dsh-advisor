@@ -18,23 +18,12 @@ uninstall. The quick version lives in the [README](../README.md#install).
 
 The dsh web client and the desktop app install bundles from the sidebar
 **Plugins** page rather than the CLI: **Add plugin** → package name
-`dsh-advisor` → **Install** → **Enable now**. The package field also takes a
-version suffix (`dsh-advisor@0.1.0`); the dialog accepts a Git repository, a
-tarball, or an absolute local path as well, and the **Registry** selector beside
-the package field names the registry the install asks first and unfolds the
-choice among the configured registries — pnpm's own, the mainland-China mirror,
-or a typed http(s) address. The initial choice comes from the first-use registry
-probe, and the choice is remembered in this browser. A bundle whose dialog you
-close instead stays installed but switched off.
+`dsh-advisor` → **Install** → **Enable now**. The page manages the profile the
+running app serves — the `web` profile for the web client, the `desktop`
+profile for the desktop app.
 
-The page manages the profile the running app serves — the `web` profile for the
-web client, the Electron-owned `desktop` profile for the desktop app. The npm
-CLI rejects plugin-management requests for `desktop`, so
-`dsh plugin --profile desktop add …` is not a Desktop route: the in-app dialog
-is. The desktop app composes the same web app bundle that ships this page, so
-the Plugins page and the dialog are the same surface on both. Configuring the
-installed bundle — the Advisor card — stays on its page in the same list (see
-[Web Settings exposure](#6-web-settings-exposure)).
+Configuring the installed bundle — the Advisor card — stays on its page in the
+same list (see [Web Settings exposure](#6-web-settings-exposure)).
 
 The CLI sections below cover the `web` and `dsh-tui` profiles; the README quick
 start states both routes → [README](../README.md#install).
