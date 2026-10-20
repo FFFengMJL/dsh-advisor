@@ -19,9 +19,19 @@
 
 ### 安装
 
+#### Web / Desktop（「插件」页）
+
+在 dsh web 客户端或桌面端，打开侧边栏的**「插件」**页，点**「添加插件」**，在包名字段填入 `dsh-advisor`，再点**「安装」**——安装完成后点**「立即启用」**（若直接关闭对话框，则包已安装但处于停用状态）。包名字段可带版本后缀（如 `dsh-advisor@0.1.0`）；对话框也接受 Git 仓库、tarball 或本地绝对路径，旁边的**「Registry」**选择器决定优先询问哪个 registry——安装已发布包时保持默认即可。启用之后，同一个插件列表里该组合包的页面就带着 Advisor 配置卡片。
+
+「插件」页管理的是当前运行的应用所服务的那个 profile，因此在 web 客户端上，这会把组合包装进 `web` profile。**桌面端：** `desktop` profile 由 Electron 客户端独占——npm CLI 会拒绝它的插件管理请求，所以 `dsh plugin --profile desktop add …` 不是桌面端的安装路径，上面的应用内对话框才是。桌面端组合的是同一个提供该页面的 web 应用组合包，因此两个界面上的操作面完全一致。
+
+#### `dsh` CLI
+
 ```sh
 dsh plugin --profile web add dsh-advisor      # web profile（设置 → Advisor 卡片）
 dsh plugin --profile dsh-tui add dsh-advisor  # dsh-tui 终端 profile
+
+dsh plugin --profile web update dsh-advisor@latest   # 更新 —— 同一个 --profile 参数指定目标
 ```
 
 同一个插件、两个前端——区别只在 `--profile` 参数。钉版本：加 `@<version>`（如 `dsh-advisor@0.1.0`）。registry 安装拉取的是已发布的 tarball，自带构建产物（`lib/` + `cordis.patch.yml`）——目标机无需构建；运行时依赖（`@deepseek-ai/cordis`、`@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-*` peers）经 dsh 安装的扁平 profile module fallback 解析——无需额外安装步骤。registry / git / tarball / 本地目录变体（本地目录从已构建 checkout 安装：`dsh plugin --profile web add .` 或 `dsh plugin --profile dsh-tui add .`）、web Settings 暴露、卸载与 `--dump-config` 验证 → [docs/install.zh.md](docs/install.zh.md)。
@@ -132,7 +142,7 @@ MVP 有意放弃与 omp 的完整对等。已接受的差距（在 harness 迭�
 
 | 文档 | 内容 |
 |---|---|
-| [docs/install.zh.md](docs/install.zh.md) | profile 安装（web + dsh-tui）/ registry / git / tarball / 本地目录变体 / web Settings 暴露 / 卸载 / `--dump-config` 验证 |
+| [docs/install.zh.md](docs/install.zh.md) | Web/Desktop 界面安装 / profile 安装（web + dsh-tui）/ registry / git / tarball / 本地目录变体 / web Settings 暴露 / 卸载 / `--dump-config` 验证 |
 | [docs/configuration.md](docs/configuration.md) | advisor 配置全字段：键与默认值、显式模型门禁（S4）、配置面（web 卡片 / TUI `/settings` / 补丁层）、示例 YAML、live 重应用行为 |
 | [docs/consumer-api.md](docs/consumer-api.md) | 开发者消费契约：包根库 API、`dsh-advisor/client` 入口、`/advisor` 指令面、导出清单、生命周期 |
 | [docs/verification.md](docs/verification.md) | 验证记录：测试矩阵（16 文件 / 319 用例）、typecheck/build、CI 契约、真实环境步骤 |

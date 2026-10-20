@@ -19,9 +19,19 @@ Works in both dsh front ends: the **web** profile (sidebar → Plugins → dsh-a
 
 ### Install
 
+#### Web / Desktop (Plugins page)
+
+In the dsh web client or the desktop app, open the sidebar **Plugins** page, use **Add plugin**, enter the package name `dsh-advisor`, and press **Install** — a finished install offers **Enable now** (closing the dialog instead leaves the bundle installed but switched off). The package field takes a version suffix (e.g. `dsh-advisor@0.1.0`); the dialog also accepts a Git repository, a tarball, or an absolute local path, and its **Registry** selector picks the registry asked first — leave it at the default for the published package. Once the bundle is on, its page on the same list carries the Advisor config card.
+
+The Plugins page manages the profile the running app serves, so on the web client this installs into the `web` profile. **Desktop:** the `desktop` profile is Electron-owned — the npm CLI rejects plugin-management requests for it, so `dsh plugin --profile desktop add …` is not a Desktop route; the in-app dialog above is. The desktop app composes the same web app bundle that ships this page, so the surface is identical on both.
+
+#### `dsh` CLI
+
 ```sh
 dsh plugin --profile web add dsh-advisor      # web profile (Settings → Advisor card)
 dsh plugin --profile dsh-tui add dsh-advisor  # dsh-tui terminal profile
+
+dsh plugin --profile web update dsh-advisor@latest   # update — the same --profile flag picks the target
 ```
 
 Same plugin, either front end — the only difference is the `--profile` flag. Pin a version with `@<version>` (e.g. `dsh-advisor@0.1.0`). A registry install fetches the published tarball, which ships the built artifacts (`lib/` + `cordis.patch.yml`) — nothing builds on the target machine, and runtime dependencies (`@deepseek-ai/cordis`, `@deepseek-ai/schemastery`, `@deepseek-ai/dsh-*` peers) resolve through the dsh installation's flat profile module fallback — no extra install step. Registry / git / tarball / local-directory variants (local-dir from a built checkout: `dsh plugin --profile web add .` or `dsh plugin --profile dsh-tui add .`), web Settings exposure, uninstall, and `--dump-config` verification → [docs/install.md](docs/install.md).
@@ -132,7 +142,7 @@ The MVP deliberately drops full omp parity. Accepted gaps (tracked in the harnes
 
 | Doc | Content |
 |---|---|
-| [docs/install.md](docs/install.md) | profile install (web + dsh-tui) / registry / git / tarball / local-directory variants / web Settings exposure / uninstall / `--dump-config` verification |
+| [docs/install.md](docs/install.md) | Web/Desktop UI install / profile install (web + dsh-tui) / registry / git / tarball / local-directory variants / web Settings exposure / uninstall / `--dump-config` verification |
 | [docs/configuration.md](docs/configuration.md) | full advisor config reference: keys & defaults, explicit model gate (S4), config surfaces (web card / TUI `/settings` / patch layer), example YAML, live re-apply behavior |
 | [docs/consumer-api.md](docs/consumer-api.md) | developer consumption contract: package-root library API, `dsh-advisor/client` entry, `/advisor` command surface, export inventory, lifecycle |
 | [docs/verification.md](docs/verification.md) | verification records: test matrix (16 files / 319 cases), typecheck/build, CI contract, real-environment steps |

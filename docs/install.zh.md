@@ -7,7 +7,15 @@
 - 可用的 dsh 运行环境（`$DSH_HOME`，默认 `~/.dsh`）与可写的目标 profile（如 `web`）；安装后重启 dsh 会话。
 - registry 安装只需 PATH 上有 pnpm（`dsh plugin` 是 pnpm 转发器）。从源码构建（下文 git / 本地目录 / tarball 安装）另需 **node**（≥ 22）与私有 `@deepseek-ai/*` peers 的 registry 认证——`prepare` 只运行 `pnpm build`（依赖解析不需要 `DSH_HOME` 源码树前置条件；peers 经 `autoInstallPeers` + `~/.npmrc` 认证令牌从 npm registry 解析）。
 
-## 1. 一条命令的 registry 安装
+## 1. Web / Desktop 界面安装
+
+dsh web 客户端与桌面端从侧边栏的**「插件」**页安装组合包，不必用 CLI：**「添加插件」** → 包名 `dsh-advisor` → **「安装」** → **「立即启用」**。包名字段也接受版本后缀（`dsh-advisor@0.1.0`）；对话框同样接受 Git 仓库、tarball 或本地绝对路径，旁边的**「Registry」**选择器决定安装时优先询问哪个 registry（安装已发布包时保持默认即可）。若直接关闭对话框，包已安装但处于停用状态。
+
+该页管理的是当前运行的应用所服务的那个 profile —— web 客户端是 `web` profile，桌面端是 Electron 客户端独占的 `desktop` profile。npm CLI 会拒绝 `desktop` 的插件管理请求，因此 `dsh plugin --profile desktop add …` 不是桌面端的安装路径，应用内对话框才是。桌面端组合的是同一个提供该页面的 web 应用组合包，所以「插件」页与对话框在两个界面上完全一致。安装后的配置 —— Advisor 卡片 —— 就在同一列表里该组合包的页面上（见 [web Settings 暴露](#6-web-settings-暴露)）。
+
+下文的 CLI 各节覆盖 `web` 与 `dsh-tui` profile；README 快速开始同时给出这两条路径 → [README](../README.zh.md#安装)。
+
+## 2. 一条命令的 registry 安装
 
 ```sh
 dsh plugin --profile web add dsh-advisor   # <name> = 你的 profile 名
@@ -17,18 +25,18 @@ dsh plugin --profile web add dsh-advisor   # <name> = 你的 profile 名
 
 registry 安装拉取的是已发布的 tarball，其中自带构建产物（`lib/` + `cordis.patch.yml`）且没有 `install` / `postinstall` 脚本——不会运行 `prepare` 构建，也无需构建权限。运行时依赖（`@deepseek-ai/cordis`、`@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-*` peers）声明为 peerDependencies，由 dsh 安装的扁平 profile module fallback 解析——无需额外安装步骤。
 
-- **版本钉住**：追加 `@<version>` 即可（如 `dsh-advisor@0.1.0`）。registry 包没有 commit 钉住；要测试未发布改动，用下面的[本地目录安装](#2-本地目录安装开发--验证)。
+- **版本钉住**：追加 `@<version>` 即可（如 `dsh-advisor@0.1.0`）。registry 包没有 commit 钉住；要测试未发布改动，用下面的[本地目录安装](#3-本地目录安装开发--验证)。
 
-## 2. 本地目录安装（开发 / 验证）
+## 3. 本地目录安装（开发 / 验证）
 
 ```sh
 pnpm install                  # 构建组合包（prepare 自建）
 dsh plugin --profile web add .   # <name> = 你的 profile 名
 ```
 
-`dsh plugin add` 会把组合包追加到 profile 的 `dsh.profile.bundles`（包声明了 `dsh.bundle`）；组合包插入一行插件配置 —— `id: advisor`，`name: dsh-advisor`（见 `cordis.patch.yml`）。本地 `add .` 走 pnpm 的 `link:` 依赖，pnpm **不会**为 `link:` 依赖运行 prepare/postinstall——请先用 `pnpm install`（或 `pnpm build`）构建好组合包再添加。无需任何宿主补丁：插件完全通过插件配置行运行（见 [web Settings 暴露](#5-web-settings-暴露)）。
+`dsh plugin add` 会把组合包追加到 profile 的 `dsh.profile.bundles`（包声明了 `dsh.bundle`）；组合包插入一行插件配置 —— `id: advisor`，`name: dsh-advisor`（见 `cordis.patch.yml`）。本地 `add .` 走 pnpm 的 `link:` 依赖，pnpm **不会**为 `link:` 依赖运行 prepare/postinstall——请先用 `pnpm install`（或 `pnpm build`）构建好组合包再添加。无需任何宿主补丁：插件完全通过插件配置行运行（见 [web Settings 暴露](#6-web-settings-暴露)）。
 
-## 3. tarball 安装
+## 4. tarball 安装
 
 ```sh
 pnpm pack
@@ -37,7 +45,7 @@ dsh plugin --profile web add dsh-advisor-0.1.0.tgz
 
 tarball 附带的是构建产物（`lib/` + `cordis.patch.yml`），因此不会运行 `prepare` 脚本，也无需构建权限。运行时依赖（`@deepseek-ai/cordis`、`@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-{session,agent,llm,commands,timeout}`）声明为 peerDependencies，由 dsh 安装的扁平 profile module fallback 解析——无需额外安装步骤。
 
-## 4. dsh-tui profile 安装
+## 5. dsh-tui profile 安装
 
 advisor 也可以用与 web profile 相同的命令装入终端 TUI profile（`dsh --profile dsh-tui`）：
 
@@ -65,11 +73,11 @@ dsh plugin --profile dsh-tui remove dsh-advisor
 dsh --profile dsh-tui --dump-config   # 确认 dsh-advisor 层已消失
 ```
 
-## 5. web Settings 暴露
+## 6. web Settings 暴露
 
 dsh web 的**「插件」页**在组合包自己的页面上渲染该组合包的配置，经 `plugins.bundle.config` 卡片 slot 注册（以组合包包名为 key）。Advisor 卡片（key `dsh-advisor`）通过 dsh 宿主的 apiproxy `describe` 读取 provider 目录（已暴露的 `llm-*` 命名空间），但 advisor 配置只通过**官方 `GatewayService` RPC 通道**读写——它不依赖 apiproxy allowlist（allowlist 仅覆盖模型提供者命名空间 + 产品命名空间：locale / permission / ui-conversation / ui-theme / ui-onboarding / agent-presets）。**上游 dsh 没有注册级 opt-in**（`exposeToWebClients` 不存在于上游 `SettingsRegisterOptions`——已在 pristine 20da39e 快照上核实），因此 `advisor` 命名空间**不在 apiproxy allowlist 上**。插件注册 `AdvisorConfigGateway`（带 `@Remote('get')`/`@Remote('set')` 方法的 `GatewayService`），宿主的 typertGateway 认领 `/api/advisor/get` + `/api/advisor/set`（与 dsh 内建 `goals` 服务同一机制），卡片经 `connection.rpc` 调用它们。进程内写入（`ctx.settings.update`）没有 exposed-namespace 检查，因此在任何提供 GatewayService 通道的 dsh 构建上保存都可用。无需也不施加任何宿主补丁。
 
-## 6. 验证
+## 7. 验证
 
 ```sh
 dsh --profile web --dump-config   # 显示带 advisor 配置行的 "# == dsh-advisor" 层
@@ -78,7 +86,7 @@ dsh --profile web
 
 启动后，web 的「插件」页会在 dsh-advisor 组合包页面上渲染 Advisor 卡片；它通过 `/api/advisor/get` + `/api/advisor/set` live 读写 advisor entry config——保存后运行中的会话立即生效。
 
-## 7. 卸载
+## 8. 卸载
 
 ```sh
 dsh plugin --profile web remove dsh-advisor
