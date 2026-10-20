@@ -9,7 +9,7 @@
 
 ## 1. Web / Desktop 界面安装
 
-dsh web 客户端与桌面端从侧边栏的**「插件」**页安装组合包，不必用 CLI：**「添加插件」** → 包名 `dsh-advisor` → **「安装」** → **「立即启用」**。包名字段也接受版本后缀（`dsh-advisor@0.1.0`）；对话框同样接受 Git 仓库、tarball 或本地绝对路径，旁边的**「Registry」**选择器决定安装时优先询问哪个 registry（安装已发布包时保持默认即可）。若直接关闭对话框，包已安装但处于停用状态。
+dsh web 客户端与桌面端从侧边栏的**「插件」**页安装组合包，不必用 CLI：**「添加插件」** → 包名 `dsh-advisor` → **「安装」** → **「立即启用」**。包名字段也接受版本后缀（`dsh-advisor@0.1.0`）；对话框同样接受 Git 仓库、tarball 或本地绝对路径，旁边的**「Registry」**选择器指出安装时优先询问哪个 registry，并展开配置的 registry 之间的选项——pnpm 自己的 registry、中国大陆镜像，或填入的 http(s) 地址；初始选择来自首次使用时的 registry 探测，选择会记在本浏览器里。若直接关闭对话框，包已安装但处于停用状态。
 
 该页管理的是当前运行的应用所服务的那个 profile —— web 客户端是 `web` profile，桌面端是 Electron 客户端独占的 `desktop` profile。npm CLI 会拒绝 `desktop` 的插件管理请求，因此 `dsh plugin --profile desktop add …` 不是桌面端的安装路径，应用内对话框才是。桌面端组合的是同一个提供该页面的 web 应用组合包，所以「插件」页与对话框在两个界面上完全一致。安装后的配置 —— Advisor 卡片 —— 就在同一列表里该组合包的页面上（见 [web Settings 暴露](#6-web-settings-暴露)）。
 

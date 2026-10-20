@@ -20,10 +20,12 @@ The dsh web client and the desktop app install bundles from the sidebar
 **Plugins** page rather than the CLI: **Add plugin** → package name
 `dsh-advisor` → **Install** → **Enable now**. The package field also takes a
 version suffix (`dsh-advisor@0.1.0`); the dialog accepts a Git repository, a
-tarball, or an absolute local path as well, and its **Registry** selector picks
-the registry the install asks first (keep the default for the published
-package). A bundle whose dialog you close instead stays installed but switched
-off.
+tarball, or an absolute local path as well, and the **Registry** selector beside
+the package field names the registry the install asks first and unfolds the
+choice among the configured registries — pnpm's own, the mainland-China mirror,
+or a typed http(s) address. The initial choice comes from the first-use registry
+probe, and the choice is remembered in this browser. A bundle whose dialog you
+close instead stays installed but switched off.
 
 The page manages the profile the running app serves — the `web` profile for the
 web client, the Electron-owned `desktop` profile for the desktop app. The npm
