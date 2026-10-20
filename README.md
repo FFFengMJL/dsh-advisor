@@ -21,7 +21,7 @@ Works in both dsh front ends: the **web** profile (sidebar → Plugins → dsh-a
 
 #### Web / Desktop (Plugins page)
 
-In the dsh web client or the desktop app, open the sidebar **Plugins** page, use **Add plugin**, enter the package name `dsh-advisor`, press **Install**, then **Enable now**. The desktop app installs through the same page.
+In the dsh web client or the desktop app, open the sidebar **Plugins** page, use **Add plugin**, enter the package name `dsh-advisor`, press **Install**, then **Enable now**.
 
 #### `dsh` CLI
 
