@@ -19,9 +19,17 @@ Works in both dsh front ends: the **web** profile (sidebar → Plugins → dsh-a
 
 ### Install
 
+#### Web / Desktop (Plugins page)
+
+In the dsh web client or the desktop app, open the sidebar **Plugins** page, use **Add plugin**, enter the package name `dsh-advisor`, press **Install**, then **Enable now**.
+
+#### `dsh` CLI
+
 ```sh
 dsh plugin --profile web add dsh-advisor      # web profile (Settings → Advisor card)
 dsh plugin --profile dsh-tui add dsh-advisor  # dsh-tui terminal profile
+
+dsh plugin --profile web update dsh-advisor@latest   # update — the same --profile flag picks the target
 ```
 
 Same plugin, either front end — the only difference is the `--profile` flag. Pin a version with `@<version>` (e.g. `dsh-advisor@0.1.0`). A registry install fetches the published tarball, which ships the built artifacts (`lib/` + `cordis.patch.yml`) — nothing builds on the target machine, and runtime dependencies (`@deepseek-ai/cordis`, `@deepseek-ai/schemastery`, `@deepseek-ai/dsh-*` peers) resolve through the dsh installation's flat profile module fallback — no extra install step. Registry / git / tarball / local-directory variants (local-dir from a built checkout: `dsh plugin --profile web add .` or `dsh plugin --profile dsh-tui add .`), web Settings exposure, uninstall, and `--dump-config` verification → [docs/install.md](docs/install.md).
@@ -132,7 +140,7 @@ The MVP deliberately drops full omp parity. Accepted gaps (tracked in the harnes
 
 | Doc | Content |
 |---|---|
-| [docs/install.md](docs/install.md) | profile install (web + dsh-tui) / registry / git / tarball / local-directory variants / web Settings exposure / uninstall / `--dump-config` verification |
+| [docs/install.md](docs/install.md) | Web/Desktop UI install / profile install (web + dsh-tui) / registry / git / tarball / local-directory variants / web Settings exposure / uninstall / `--dump-config` verification |
 | [docs/configuration.md](docs/configuration.md) | full advisor config reference: keys & defaults, explicit model gate (S4), config surfaces (web card / TUI `/settings` / patch layer), example YAML, live re-apply behavior |
 | [docs/consumer-api.md](docs/consumer-api.md) | developer consumption contract: package-root library API, `dsh-advisor/client` entry, `/advisor` command surface, export inventory, lifecycle |
 | [docs/verification.md](docs/verification.md) | verification records: test matrix (16 files / 319 cases), typecheck/build, CI contract, real-environment steps |

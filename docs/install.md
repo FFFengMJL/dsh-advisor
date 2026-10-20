@@ -14,7 +14,21 @@ uninstall. The quick version lives in the [README](../README.md#install).
   source-tree prerequisite for dependency resolution; the peers resolve from
   the npm registry via `autoInstallPeers` + the `~/.npmrc` auth token).
 
-## 1. One-line registry install
+## 1. Web / Desktop UI install
+
+The dsh web client and the desktop app install bundles from the sidebar
+**Plugins** page rather than the CLI: **Add plugin** → package name
+`dsh-advisor` → **Install** → **Enable now**. The page manages the profile the
+running app serves — the `web` profile for the web client, the `desktop`
+profile for the desktop app.
+
+Configuring the installed bundle — the Advisor card — stays on its page in the
+same list (see [Web Settings exposure](#6-web-settings-exposure)).
+
+The CLI sections below cover the `web` and `dsh-tui` profiles; the README quick
+start states both routes → [README](../README.md#install).
+
+## 2. One-line registry install
 
 ```sh
 dsh plugin --profile web add dsh-advisor   # <name> = your profile name
@@ -31,10 +45,10 @@ flat profile module fallback — no extra install step.
 
 - **Version pinning**: append `@<version>` to pin (e.g. `dsh-advisor@0.1.0`).
   Registry packages have no commit pinning; use the [local directory
-  install](#2-local-directory-install-development--verification) to test
+  install](#3-local-directory-install-development--verification) to test
   un-released changes.
 
-## 2. Local directory install (development / verification)
+## 3. Local directory install (development / verification)
 
 ```sh
 pnpm install                  # build the bundle (prepare self-build)
@@ -47,9 +61,9 @@ dsh plugin --profile web add .   # <name> = your profile name
 goes through pnpm's `link:` dependency, for which pnpm does **not** run
 prepare/postinstall — build the bundle with `pnpm install` (or `pnpm build`)
 before adding. No host patching is involved: the plugin runs entirely from its
-plugin config row (see [Web Settings exposure](#5-web-settings-exposure)).
+plugin config row (see [Web Settings exposure](#6-web-settings-exposure)).
 
-## 3. Tarball install
+## 4. Tarball install
 
 ```sh
 pnpm pack
@@ -62,7 +76,7 @@ A tarball ships the built artifacts (`lib/` + `cordis.patch.yml`), so no
 are declared as peerDependencies and resolved by the dsh installation's flat
 profile module fallback — no extra install step.
 
-## 4. dsh-tui profile install
+## 5. dsh-tui profile install
 
 The advisor also installs into the terminal TUI profile (`dsh --profile
 dsh-tui`) with the same commands as the web profile:
@@ -110,7 +124,7 @@ dsh plugin --profile dsh-tui remove dsh-advisor
 dsh --profile dsh-tui --dump-config   # confirm the dsh-advisor layer is gone
 ```
 
-## 5. Web Settings exposure
+## 6. Web Settings exposure
 
 The dsh web **Plugins** page renders a bundle's own configuration on that
 bundle's page, contributed through the `plugins.bundle.config` card slot (keyed
@@ -133,7 +147,7 @@ entry id) carries no exposed-namespace check, so saving works on any dsh
 build that ships the GatewayService channel. No host patching is applied or
 required.
 
-## 6. Verify
+## 7. Verify
 
 ```sh
 dsh --profile web --dump-config   # shows a "# == dsh-advisor" layer with the advisor row
@@ -145,7 +159,7 @@ bundle's page; it reads and writes the advisor entry config live through
 `/api/advisor/get` + `/api/advisor/set` — saving applies to running sessions
 immediately.
 
-## 7. Uninstall
+## 8. Uninstall
 
 ```sh
 dsh plugin --profile web remove dsh-advisor

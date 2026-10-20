@@ -43,7 +43,7 @@ CI 在 PR 与 `main` push 上运行：`pnpm install --frozen-lockfile` → `pnpm
 
 ## 真实环境待验证步骤（由用户在真实 dsh 环境执行）
 
-> 以下步骤必须在**真实 dsh 环境**执行（可写 `$DSH_HOME` 安装、可操作的 web GUI、能发起真实模型调用）；路径一律以 `$DSH_HOME` 表达，不用本地绝对路径。步骤与预期来自 [docs/install.zh.md](install.zh.md)（§1–§6）与 `docs/configuration.md` 的行为要点，逐项对照。
+> 以下步骤必须在**真实 dsh 环境**执行（可写 `$DSH_HOME` 安装、可操作的 web GUI、能发起真实模型调用）；路径一律以 `$DSH_HOME` 表达，不用本地绝对路径。步骤与预期来自 [docs/install.zh.md](install.zh.md)（§2–§7）与 `docs/configuration.md` 的行为要点，逐项对照。
 
 ### 1. 安装与 profile 验证
 
