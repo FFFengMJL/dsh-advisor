@@ -444,6 +444,10 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     runtime = new AdvisorRuntime({
       provider: effective.provider!,
       model: effective.model!,
+      // The owning conversation's id (runtime keys are plain strings; the
+      // request option is the host's branded SessionId). Providers that route
+      // per conversation on a header need it on every advisor call.
+      sessionId: sessionId as SessionId,
       systemPrompt: globalResolved.systemPrompt || DEFAULT_ADVISOR_SYSTEM_PROMPT,
       proseFallback: globalResolved.proseFallback,
       // Plan dsh-advisor-reasoning-effort (RD-1/RD-2): absent/empty = the

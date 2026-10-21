@@ -24,6 +24,7 @@
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { AdvisorLlm, AdvisorRuntimeLogger } from './advisor-runtime.js'
 import type { AdvisorSuggestionFace } from './gateway.js'
@@ -382,7 +383,7 @@ export class NextPromptManager {
         return // the pair changed mid-chain — do not re-route this prediction
       }
       pair = attemptPair
-      const raw = await this.callOnce(context, attemptPair.provider, attemptPair.model)
+      const raw = await this.callOnce(context, attemptPair.provider, attemptPair.model, sessionId)
       text = raw === undefined ? undefined : shapeNextPrompt(raw)
       if (text !== undefined) break
     }
@@ -404,12 +405,12 @@ export class NextPromptManager {
    * retry budget covers them; there is no finish-reason contract here (the
    * collected text is the whole best-effort result).
    */
-  private async callOnce(context: string, provider: string, model: string): Promise<string | undefined> {
+  private async callOnce(context: string, provider: string, model: string, sessionId: string): Promise<string | undefined> {
     let text = ''
     using deadlineHandle = deadline(undefined, this.callTimeoutMs, NEXT_PROMPT_CALL_TIMEOUT)
     const signal = deadlineHandle.signal
     try {
-      const stream = this.options.llm().stream(this.buildOptions(context, provider, model, signal))
+      const stream = this.options.llm().stream(this.buildOptions(context, provider, model, signal, sessionId))
       const iterator = stream[Symbol.asyncIterator]()
       for (;;) {
         const next = await raceIteratorNext(iterator, signal)
@@ -429,7 +430,7 @@ export class NextPromptManager {
     return text
   }
 
-  private buildOptions(context: string, provider: string, model: string, signal: AbortSignal): GenerateOptions {
+  private buildOptions(context: string, provider: string, model: string, signal: AbortSignal, sessionId: string): GenerateOptions {
     return {
       provider,
       model,
@@ -438,6 +439,10 @@ export class NextPromptManager {
         content: [{ type: 'text', text: context }],
         source: { kind: 'user' },
       })],
+      // The conversation this prediction belongs to: providers that route per
+      // conversation on a request header (OpenCode Go's `x-opencode-session`)
+      // refuse a request without it.
+      sessionId: sessionId as SessionId,
       signal,
       // An ordinary conversation request — `purpose` stays unset, like the
       // review call (KD-5).

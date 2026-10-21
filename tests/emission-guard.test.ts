@@ -37,6 +37,7 @@ import {
 } from '../src/emission-guard'
 import { AdvisorRuntime } from '../src/advisor-runtime'
 import type { AdvisorLlm, AdvisorRuntimeOptions, AdviceNote } from '../src/advisor-runtime'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Delta } from '../src/transcript'
 
 // ---------------------------------------------------------------------------
@@ -249,6 +250,7 @@ function makeRuntime(
   const runtime = new AdvisorRuntime({
     provider: 'test-provider',
     model: 'test-model',
+    sessionId: 'sess-test' as SessionId,
     systemPrompt: 'test system prompt',
     llm,
     onNote: (note) => notes.push(note),

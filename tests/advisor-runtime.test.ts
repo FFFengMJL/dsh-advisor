@@ -39,7 +39,7 @@ import { Context } from '@deepseek-ai/cordis'
 // by name, not as the default.
 import { LlmRuntime, LlmAdapter, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmFailure, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { AdvisorRuntime, ADVISOR_NOTE_MAX_CHARS, extractAdviceNote, extractProseFallbackNote } from '../src/advisor-runtime'
 import type { AdvisorLlm, AdvisorRuntimeOptions, AdvisorRuntimeStatus, AdviceNote } from '../src/advisor-runtime'
 import type { Delta } from '../src/transcript'
@@ -233,6 +233,7 @@ function makeRuntime(llm: AdvisorLlm, overrides: Partial<AdvisorRuntimeOptions> 
   const runtime = new AdvisorRuntime({
     provider: 'test-provider',
     model: 'test-model',
+    sessionId: 'sess-test' as SessionId,
     systemPrompt: TEST_SYSTEM_PROMPT,
     llm,
     onNote: (note) => notes.push(note),
@@ -275,6 +276,20 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     expect(message.content[0]).toEqual({ type: 'text', text: '### Session update\n\n**user**: fix the bug' })
     expect(runtime.status()).toBe('running')
     expect(runtime.pendingCount).toBe(0)
+  })
+
+  it('carries the owning conversation id on every advisor request', async () => {
+    // OpenCode Go routes per conversation on `x-opencode-session` and rejects a
+    // request without it; pi-ai derives that header from `sessionId`, so the
+    // advisor call must carry the conversation it reviews.
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"looks fine"}') }])
+    const { runtime } = makeRuntime(llm, { sessionId: 'session-abc' as SessionId })
+
+    runtime.enqueue(delta('update'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls).toHaveLength(1)
+    expect(llm.calls[0]!.sessionId).toBe('session-abc')
   })
 
   it('calls the model once per delta, serialized per session', async () => {
@@ -376,8 +391,8 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     // Closed whitelist on both calls (T2-style): call 0 has no reasoningEffort
     // (the failure is not a verdict), call 1 re-advertises 'off' after the
     // fresh resolution — same key set minus/plus reasoningEffort.
-    expect(Object.keys(llm.calls[0]!).sort()).toEqual(['messages', 'model', 'provider', 'signal', 'system'])
-    expect(Object.keys(llm.calls[1]!).sort()).toEqual(['messages', 'model', 'provider', 'reasoningEffort', 'signal', 'system'])
+    expect(Object.keys(llm.calls[0]!).sort()).toEqual(['messages', 'model', 'provider', 'sessionId', 'signal', 'system'])
+    expect(Object.keys(llm.calls[1]!).sort()).toEqual(['messages', 'model', 'provider', 'reasoningEffort', 'sessionId', 'signal', 'system'])
     // Zero tools contract: no advisor call ever carries a tools key.
     expect('tools' in llm.calls[0]!).toBe(false)
     expect('tools' in llm.calls[1]!).toBe(false)
@@ -531,7 +546,7 @@ describe('AdvisorRuntime — minimal request shape (AC-1 closed whitelist)', () 
     expect(llm.calls).toHaveLength(1)
     const options = llm.calls[0]!
     // Closed whitelist (AC-1): the exact sorted key set, nothing more.
-    expect(Object.keys(options).sort()).toEqual(['messages', 'model', 'provider', 'reasoningEffort', 'signal', 'system'])
+    expect(Object.keys(options).sort()).toEqual(['messages', 'model', 'provider', 'reasoningEffort', 'sessionId', 'signal', 'system'])
     // Zero-tools contract; no temperature/stop tuning; no purpose (KD-5).
     expect('tools' in options).toBe(false)
     expect('temperature' in options).toBe(false)
@@ -555,7 +570,7 @@ describe('AdvisorRuntime — minimal request shape (AC-1 closed whitelist)', () 
     expect(llm.calls).toHaveLength(1)
     const options = llm.calls[0]!
     // Closed whitelist minus reasoningEffort (capability 'none' → not advertised).
-    expect(Object.keys(options).sort()).toEqual(['messages', 'model', 'provider', 'signal', 'system'])
+    expect(Object.keys(options).sort()).toEqual(['messages', 'model', 'provider', 'sessionId', 'signal', 'system'])
     expect('reasoningEffort' in options).toBe(false)
     expect('tools' in options).toBe(false)
     expect('temperature' in options).toBe(false)
@@ -1306,6 +1321,7 @@ describe('AdvisorRuntime — composed with a real LlmRuntime + registered adapte
     const runtime = new AdvisorRuntime({
       provider: 'test-provider',
       model: 'test-model',
+      sessionId: 'sess-test' as SessionId,
       systemPrompt: TEST_SYSTEM_PROMPT,
       llm: ctx.llm,
       onNote: (note) => notes.push(note),
@@ -1372,6 +1388,7 @@ describe('AdvisorRuntime — capability-gated reasoningEffort against a real Llm
     const runtime = new AdvisorRuntime({
       provider: 'plain',
       model: 'plain-model',
+      sessionId: 'sess-test' as SessionId,
       systemPrompt: TEST_SYSTEM_PROMPT,
       llm: ctx.llm,
       onNote: (note) => notes.push(note),

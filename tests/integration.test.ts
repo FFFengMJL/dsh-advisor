@@ -427,6 +427,10 @@ describe('integration — full advisor loop (spec §7)', () => {
     expect(options.model).toBe('stub-model')
     expect('maxTokens' in options).toBe(false) // 2026-10-18 ruling: no model-side budget
     expect('purpose' in options).toBe(false) // KD-5: purpose left unset
+    // The call carries the owning conversation's id: providers that route per
+    // conversation on a request header (OpenCode Go's `x-opencode-session`)
+    // refuse the request without it.
+    expect(options.sessionId).toBe('s1')
     const delta = deltaTextOf(options)
     expect(delta).toContain('### Session update')
     expect(delta).toContain('**user**: implement the feature')

@@ -35,7 +35,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { GenerateOptions, StreamChunk, UserMessage } from '@deepseek-ai/dsh-llm'
 import { ToolCallId, CONTEXT_SUMMARY_MAX_CHARS, MessageId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent, SurfaceOp } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId, SurfaceOp } from '@deepseek-ai/dsh-session'
 import { AdvisorDelivery, buildAdvisorMessage } from '../src/delivery'
 import type { AdvisorDeliveryAgent, AdvisorDeliveryLogger } from '../src/delivery'
 import { ADVISOR_PLUGIN_ID, isAdvisorMessage } from '../src/kinds'
@@ -346,6 +346,7 @@ describe('AdvisorDelivery — contained throw through the routing seam (T4 F1)',
     const runtime = new AdvisorRuntime({
       provider: 'test-provider',
       model: 'test-model',
+      sessionId: 's1' as SessionId,
       systemPrompt: 'review',
       llm,
       onNote: (note) => {
