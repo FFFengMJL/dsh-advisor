@@ -10,8 +10,9 @@
  * - a FIFO queue of pending transcript deltas (bounded — spec §6 "bounded
  *   backlog"; drop-newest when full);
  * - a serialized async drain loop: one `llm.stream` call per delta with
- *   `{ provider, model, system, messages: [user delta] }` and `purpose` left
- *   UNSET (KD-5 — an advisor call is an ordinary conversation request). NO
+ *   `{ provider, model, sessionId, system, messages: [user delta] }` and
+ *   `purpose` left UNSET (KD-5 — an advisor call is an ordinary conversation
+ *   request, so it carries the owning conversation's id). NO
  *   `maxTokens` is sent (2026-10-18 user ruling, superseding the KD-I1
  *   budget: on OpenAI-compatible APIs `max_tokens` caps reasoning + content
  *   together, so with thinking models the budget intermittently starved the
@@ -63,6 +64,7 @@ import type {
   LlmResolvedModelInfo,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { createEmissionGuard } from './emission-guard.js'
 import type { EmissionGuard } from './emission-guard.js'
@@ -120,6 +122,14 @@ export interface AdvisorRuntimeOptions {
   readonly provider: string
   /** Resolved model id (the explicit gate guarantees it when enabled). */
   readonly model: string
+  /**
+   * Owning conversation's session id. Every advisor request carries it so
+   * provider-level routing headers keyed on the conversation are emitted
+   * (OpenCode / OpenCode Go reject requests without `x-opencode-session`);
+   * when absent the option is omitted, leaving providers that do not need it
+   * untouched.
+   */
+  readonly sessionId?: SessionId
   /** System prompt sent with every advisor call (config override or KD-2 default). */
   readonly systemPrompt: string
   /** Backoff for the single transient retry (KD-5); default 1000ms. */
@@ -431,6 +441,8 @@ type CallResult =
 export class AdvisorRuntime {
   private readonly provider: string
   private readonly model: string
+  /** Owning conversation's session id; see {@link AdvisorRuntimeOptions.sessionId}. */
+  private readonly sessionId: SessionId | undefined
   private readonly systemPrompt: string
   private readonly proseFallback: boolean
   /** Configured effort id, normalized: `undefined` = automatic (smallest declared). */
@@ -484,6 +496,7 @@ export class AdvisorRuntime {
   constructor(options: AdvisorRuntimeOptions) {
     this.provider = options.provider
     this.model = options.model
+    this.sessionId = options.sessionId
     this.systemPrompt = options.systemPrompt
     this.proseFallback = options.proseFallback ?? false
     // Empty/whitespace = automatic, identical to an absent option: the config
@@ -895,6 +908,11 @@ export class AdvisorRuntime {
       provider: this.provider,
       model: this.model,
       system: this.systemPrompt,
+      // The conversation this review belongs to. Providers that route per
+      // conversation on a request header — OpenCode Go's `x-opencode-session`
+      // — refuse a request without it, so the advisor call carries the owning
+      // session id; omitting it keeps header-free providers byte-identical.
+      ...(this.sessionId === undefined ? {} : { sessionId: this.sessionId }),
       messages: [createUserMessage({
         content: [{ type: 'text', text: delta.markdown }],
         source: { kind: 'user' },

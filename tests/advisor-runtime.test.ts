@@ -39,7 +39,7 @@ import { Context } from '@deepseek-ai/cordis'
 // by name, not as the default.
 import { LlmRuntime, LlmAdapter, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmFailure, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { AdvisorRuntime, ADVISOR_NOTE_MAX_CHARS, extractAdviceNote, extractProseFallbackNote } from '../src/advisor-runtime'
 import type { AdvisorLlm, AdvisorRuntimeOptions, AdvisorRuntimeStatus, AdviceNote } from '../src/advisor-runtime'
 import type { Delta } from '../src/transcript'
@@ -275,6 +275,31 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     expect(message.content[0]).toEqual({ type: 'text', text: '### Session update\n\n**user**: fix the bug' })
     expect(runtime.status()).toBe('running')
     expect(runtime.pendingCount).toBe(0)
+  })
+
+  it('carries the owning conversation id on every advisor request', async () => {
+    // OpenCode Go routes per conversation on `x-opencode-session` and rejects a
+    // request without it; pi-ai derives that header from `sessionId`, so the
+    // advisor call must carry the conversation it reviews.
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"looks fine"}') }])
+    const { runtime } = makeRuntime(llm, { sessionId: 'session-abc' as SessionId })
+
+    runtime.enqueue(delta('update'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls).toHaveLength(1)
+    expect(llm.calls[0]!.sessionId).toBe('session-abc')
+  })
+
+  it('omits sessionId when the runtime has none (header-free providers unchanged)', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"looks fine"}') }])
+    const { runtime } = makeRuntime(llm)
+
+    runtime.enqueue(delta('update'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls).toHaveLength(1)
+    expect('sessionId' in llm.calls[0]!).toBe(false)
   })
 
   it('calls the model once per delta, serialized per session', async () => {
