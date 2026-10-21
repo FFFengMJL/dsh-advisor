@@ -466,9 +466,10 @@ describe('session model override — explicit gate applies AFTER session resolut
     expect(inject).not.toHaveBeenCalled()
     expect(adapter.requests).toHaveLength(1)
 
-    // Repairing the global pair builds a FRESH runtime on the new route: the
-    // repair pair differs from the pin, so a surviving runtime would keep
-    // calling the old one.
+    // Repairing the global pair serves the next delta on the NEW route. This
+    // step proves the route, not the reset-time dispose: `onChange` rebuilds a
+    // surviving runtime too when its signature changes, so the discriminating
+    // assertions are the two above.
     entry.commit(ctx, { provider: 'other', model: 'other-model' })
     feed(ctx, session, log, simpleTurn(3, 'u3', 'a3'))
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
