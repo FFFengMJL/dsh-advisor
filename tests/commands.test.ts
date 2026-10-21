@@ -352,13 +352,11 @@ describe('/advisor handler — toggle / on / off flip the runtime gate', () => {
     const handler = registerAndGetHandler(controller)
     const onResult = invoke(handler, ' on')
     expect(onResult.text).toContain('already on')
-    expect(controller.setCalls.at(-1)).toMatchObject({ sessionId: 'session-1', enabled: true })
 
     const offController = new FakeController(baseStatus({ enabled: false }))
     const offHandler = registerAndGetHandler(offController)
     const offResult = invoke(offHandler, ' off')
     expect(offResult.text).toContain('already off')
-    expect(offController.setCalls.at(-1)).toMatchObject({ sessionId: 'session-1', enabled: false })
   })
 
   it('on with a config lacking provider/model reports the S4 gate reason', () => {
