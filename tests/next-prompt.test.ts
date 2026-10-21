@@ -248,6 +248,9 @@ describe('gate (contract 1)', () => {
     })
     // An ordinary conversation request — the purpose marker stays unset.
     expect(options.purpose).toBeUndefined()
+    // The prediction carries the conversation it was made for; header-routed
+    // providers (OpenCode Go's `x-opencode-session`) refuse it otherwise.
+    expect(options.sessionId).toBe('s')
     expect(options.messages).toHaveLength(1)
     const message = options.messages[0]!
     expect(message.role).toBe('user')
