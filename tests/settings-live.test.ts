@@ -634,6 +634,83 @@ describe('settings live re-apply — proseFallback rebuild (KD-I4, issue #102)',
 })
 
 // ---------------------------------------------------------------------------
+// 4c. GitHub issue #124: `defaultEnabled` is not a runtime construction
+//     constant — the bridge's onChange reconciles the effective switch by
+//     disposing now-off runtimes; turning it back on reaches sessions on
+//     their next event (unless `/advisor on` already opted them in).
+// ---------------------------------------------------------------------------
+
+describe('settings live re-apply — defaultEnabled switch reconcile (GitHub issue #124)', () => {
+  it('a live flip to false stops an already-running session; a flip back to true starts it on the next event', async () => {
+    const { ctx, adapter, entry } = await composeLiveHarness(
+      { provider: 'stub', model: 'stub-model' },
+      [
+        [...textReply('{"note":"before the flip","severity":"nit"}')],
+        [...textReply('{"note":"after re-enabling","severity":"nit"}')],
+      ],
+    )
+    const { agent } = makeFakeAgent('s1')
+    ctx.emit('agent/created', { agent, source: 'startup' })
+    const { session, log } = makeSession('s1')
+
+    // The session runs under the schema default (true).
+    feed(ctx, session, log, simpleTurn(1, 'first request', 'first reply'))
+    await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
+
+    // Live flip to false: onChange disposes the running session (a session
+    // with no own override is now effectively off), so the next turn makes
+    // no review call.
+    entry.commit(ctx, { defaultEnabled: false })
+    feed(ctx, session, log, simpleTurn(2, 'second request', 'second reply'))
+    await flush()
+    expect(adapter.requests).toHaveLength(1)
+
+    // Flip back to true: the session holds no runtime and no override, so it
+    // is not an onChange candidate — it starts again on its next event.
+    entry.commit(ctx, { defaultEnabled: true })
+    await flush()
+    expect(adapter.requests).toHaveLength(1)
+    feed(ctx, session, log, simpleTurn(3, 'third request', 'third reply'))
+    await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
+  })
+
+  it('defaultEnabled:false makes a session opt-in: /advisor on enables THIS session and reviews resume', async () => {
+    const { ctx, adapter, entry } = await composeLiveHarness(
+      { provider: 'stub', model: 'stub-model', defaultEnabled: false },
+      [
+        [...textReply('{"note":"opted-in nit","severity":"nit"}')],
+      ],
+    )
+    const handler = await registerCommands(ctx)
+    const { agent } = makeFakeAgent('s1')
+    ctx.emit('agent/created', { agent, source: 'startup' })
+    const { session, log } = makeSession('s1')
+
+    // Default false: the pair is configured, but the session starts OFF —
+    // no model call until an explicit per-session override opts in.
+    feed(ctx, session, log, simpleTurn(1, 'first request', 'first reply'))
+    await flush()
+    expect(adapter.requests).toHaveLength(0)
+    const before = invokeAdvisor(handler, ' status', session)
+    expect(before.kind).toBe('success')
+    if (before.kind === 'success') {
+      expect(before.text).toContain('Advisor: disabled')
+      expect(before.text).toContain('disabled by default — enable it for this session with /advisor on')
+    }
+
+    // `/advisor on` writes the explicit session override — the session now
+    // runs even though the default stays false.
+    const on = invokeAdvisor(handler, ' on', session)
+    expect(on.kind).toBe('success')
+    if (on.kind === 'success') expect(on.text).toContain('Advisor on')
+    feed(ctx, session, log, simpleTurn(2, 'second request', 'second reply'))
+    await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
+    // The persisted default is untouched by the session override.
+    expect((entry.config.defaultEnabled as { get(): unknown }).get()).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 5. Unknown-key user layer containment (qc2 W-1): live reads never throw.
 // ---------------------------------------------------------------------------
 
@@ -833,6 +910,35 @@ describe('/advisor config — session-less composed readback (T2)', () => {
     if (edited.kind === 'success') {
       expect(edited.text).toContain('proseFallback: on')
       expect(edited.text).not.toContain('maxTokens')
+    }
+  })
+
+  it('the readback carries the defaultEnabled switch (GitHub issue #124) and reflects a live edit', async () => {
+    // The web card and `/advisor config` share the resolved read: the new
+    // persisted key is always present (schema default true) and a committed
+    // volatile edit is reflected live. The gate state stays independent —
+    // a configured pair keeps the readback enabled while the session default
+    // turns off.
+    const { ctx, entry } = await composeLiveHarness(
+      { provider: 'stub', model: 'stub-model' },
+      [],
+    )
+    const handler = await registerCommands(ctx)
+    const { session } = makeSession('s1')
+
+    const defaults = invokeAdvisor(handler, 'config', session)
+    expect(defaults.kind).toBe('success')
+    if (defaults.kind === 'success') {
+      expect(defaults.text).toContain('Advisor config: enabled')
+      expect(defaults.text).toContain('defaultEnabled: on')
+    }
+
+    entry.commit(ctx, { defaultEnabled: false })
+    const off = invokeAdvisor(handler, 'config', session)
+    expect(off.kind).toBe('success')
+    if (off.kind === 'success') {
+      expect(off.text).toContain('Advisor config: enabled')
+      expect(off.text).toContain('defaultEnabled: off')
     }
   })
 
