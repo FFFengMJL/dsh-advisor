@@ -808,6 +808,44 @@ describe('/advisor status — off session carries no gate reason (safeEffective 
     expect(config.text).toContain('Advisor config: disabled')
     expect(config.text).toContain('Reason: provider and model are missing')
   })
+
+  it('an explicit /advisor off records the choice even when it already matches the effective state (GitHub issue #124 review)', async () => {
+    // Off under defaultEnabled:false: the reply stays "already off", but the
+    // session now carries its own false override — flipping the persisted
+    // default to true must not re-enable it.
+    const { ctx, entry } = await composeLiveHarness(
+      { provider: 'stub', model: 'stub-model', defaultEnabled: false },
+      [],
+    )
+    const handler = await registerCommands(ctx)
+    const { session } = makeSession('s1')
+
+    const off = invokeAdvisor(handler, ' off', session)
+    expect(off.text).toContain('already off')
+    entry.commit(ctx, { defaultEnabled: true })
+
+    const status = invokeAdvisor(handler, ' status', session)
+    expect(status.text).toContain('Advisor: disabled')
+    expect(status.text).not.toContain('Reason:')
+  })
+
+  it('an explicit /advisor on records the choice even when it already matches the effective state (GitHub issue #124 review)', async () => {
+    // On under defaultEnabled:true (the schema default): the reply stays
+    // "already on", and the recorded true override survives a flip to false.
+    const { ctx, entry } = await composeLiveHarness(
+      { provider: 'stub', model: 'stub-model' },
+      [],
+    )
+    const handler = await registerCommands(ctx)
+    const { session } = makeSession('s1')
+
+    const on = invokeAdvisor(handler, ' on', session)
+    expect(on.text).toContain('already on')
+    entry.commit(ctx, { defaultEnabled: false })
+
+    const status = invokeAdvisor(handler, ' status', session)
+    expect(status.text).toContain('Advisor: enabled')
+  })
 })
 
 // ---------------------------------------------------------------------------

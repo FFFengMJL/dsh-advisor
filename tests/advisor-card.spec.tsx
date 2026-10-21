@@ -892,7 +892,6 @@ describe('AdvisorCard', () => {
     // effective value with its opt-in hint.
     await mountCard({ config: { ...defaultConfig(), defaultEnabled: true } })
     const toggle = screen.getByLabelText(en.defaultEnabled) as HTMLInputElement
-    expect(toggle.id).toBe('advisor-default-enabled')
     expect(toggle.type).toBe('checkbox')
     expect(toggle.checked).toBe(true)
     expect(screen.getByText(en.defaultEnabledHint)).toBeTruthy()

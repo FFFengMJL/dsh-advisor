@@ -438,6 +438,32 @@ describe('session model override — explicit gate applies AFTER session resolut
     expect(adapter.requests[0]).toMatchObject({ provider: 'stub', model: 'stub-model' })
   })
 
+  it('resetting a pin that closes the gate aborts the old runtime (GitHub issue #124 must-fix)', async () => {
+    const { ctx, adapter, entry, handler, agents } = await composeOverrideHarness(
+      {}, // pairless global: the session pin is what satisfies the gate
+      [textReply('{"note":"pinned","severity":"nit"}'), textReply('{"note":"after repair","severity":"nit"}')],
+    )
+    publishAgent(ctx, agents, 's1')
+    const { session, log } = makeSession('s1')
+
+    await invokeAdvisor(handler, ' model set stub stub-model', session)
+    feed(ctx, session, log, simpleTurn(1, 'u1', 'a1'))
+    await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
+
+    // Reset drops the pin; the global stays pairless, so the gate closes. The
+    // old runtime must be disposed here — a route change that closes the gate
+    // still has to abort the in-flight call and drop the backlog (spec §5.3).
+    await invokeAdvisor(handler, ' model reset', session)
+    feed(ctx, session, log, simpleTurn(2, 'u2', 'a2'))
+    await flush()
+    expect(adapter.requests).toHaveLength(1)
+
+    // Repairing the global pair builds a fresh runtime on the inherited route.
+    entry.commit(ctx, { provider: 'stub', model: 'stub-model' })
+    feed(ctx, session, log, simpleTurn(3, 'u3', 'a3'))
+    await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
+  })
+
   it('a malformed global config cannot be bypassed — the pin records but the advisor stays blocked', async () => {
     const { ctx, adapter, entry, handler, agents } = await composeOverrideHarness(
       { provider: 'stub', model: 'stub-model' },

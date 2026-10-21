@@ -343,17 +343,22 @@ describe('/advisor handler — toggle / on / off flip the runtime gate', () => {
     expect(controller.setCalls.at(-1)?.sessionLength).toBe(0) // fake agent has 0 events
   })
 
-  it('on is idempotent when already on; off when already off', () => {
+  it('on is idempotent when already on; off when already off — but both record the explicit choice', () => {
+    // GitHub issue #124 review: the reply still says "already on/off", but the
+    // controller is called either way so the session's explicit choice lands
+    // as an override (`override ?? defaultEnabled` makes "effectively on" and
+    // "explicitly chosen on" different states).
     const controller = new FakeController(baseStatus({ enabled: true }))
     const handler = registerAndGetHandler(controller)
     const onResult = invoke(handler, ' on')
     expect(onResult.text).toContain('already on')
+    expect(controller.setCalls.at(-1)).toMatchObject({ sessionId: 'session-1', enabled: true })
+
     const offController = new FakeController(baseStatus({ enabled: false }))
     const offHandler = registerAndGetHandler(offController)
     const offResult = invoke(offHandler, ' off')
     expect(offResult.text).toContain('already off')
-    expect(controller.setCalls).toHaveLength(0)
-    expect(offController.setCalls).toHaveLength(0)
+    expect(offController.setCalls.at(-1)).toMatchObject({ sessionId: 'session-1', enabled: false })
   })
 
   it('on with a config lacking provider/model reports the S4 gate reason', () => {

@@ -704,12 +704,16 @@ function createAdvisorCommandHandler(controller: AdvisorCommandController) {
         // session whose runtime is halted/quota-paused must reach `setEnabled`
         // (which resumes/rebuilds it) — a plain "already on" would be a dead
         // end, since the only resume call site sits behind the enable path.
+        // Always route through `setEnabled` as well: an explicit on RECORDS
+        // the session's choice even when it is already effectively on, so a
+        // later `defaultEnabled` flip cannot override it (GitHub issue #124
+        // review, should-fix).
         const needsRecovery = before.enabled
           && (before.runtimeStatus === 'halted' || before.runtimeStatus === 'quota_exhausted')
+        controller.setEnabled(sessionId, true, invocation.agent.session.seq)
         if (before.enabled && !needsRecovery) {
           return { kind: 'success', text: 'Advisor is already on for this session.' }
         }
-        controller.setEnabled(sessionId, true, invocation.agent.session.seq)
         // Reply from the POST-flip status: when the override flip trips the
         // S4 gate (missing provider/model), the reply must say the advisor
         // did not start and why, not a bare "Advisor on" (qc2 W-2 / qc3 I-2).
@@ -717,9 +721,15 @@ function createAdvisorCommandHandler(controller: AdvisorCommandController) {
       }
       case 'off': {
         const before = controller.getStatus(sessionId)
-        if (!before.enabled) return { kind: 'success', text: 'Advisor is already off for this session.' }
+        // Always record the explicit off (GitHub issue #124 review,
+        // should-fix): under `defaultEnabled:false` the reply is still
+        // "already off", but the session now carries its own false override,
+        // so flipping the persisted default to true cannot re-enable it.
         controller.setEnabled(sessionId, false)
-        return { kind: 'success', text: 'Advisor off for this session.' }
+        return {
+          kind: 'success',
+          text: before.enabled ? 'Advisor off for this session.' : 'Advisor is already off for this session.',
+        }
       }
       case 'status':
         return { kind: 'success', text: advisorStatusText(controller.getStatus(sessionId)) }

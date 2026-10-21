@@ -11,8 +11,8 @@
  * beneath it: provider select, model select (ALWAYS rendered — there is no
  * enable checkbox to gate them; the config-level `enabled` switch was removed
  * and the plugin-row toggle is the master switch), system-prompt textarea,
- * and the paired `immuneTurns`/`maxDeltaMessages` numbers plus the
- * `proseFallback` / `nextPrompt` / `defaultEnabled` checkboxes (the `maxTokens`
+ * the `proseFallback` / `nextPrompt` / `defaultEnabled` checkboxes and the
+ * paired `immuneTurns`/`maxDeltaMessages` numbers (the `maxTokens`
  * input was removed with the 2026-10-18 budget ruling); then the footer
  * with the failed message + Discard/Save carrying the upstream disabled
  * semantics — save = `!dirty || invalid || saving`, discard = `!dirty ||

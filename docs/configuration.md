@@ -69,7 +69,7 @@
 | `/advisor model set <provider> <model>` | 仅为**发起调用的会话**钉住模型；参数分开传，允许模型 id 含 `/`；不接受任意 session-id 参数 |
 | `/advisor model reset` | 删除本会话覆盖，重新继承**当前**全局默认值；从不触碰启用开关 |
 
-- **解析顺序（单一有效解析器）**：(1) 先校验全局配置形状（非法仍然失败关闭）；(2) 启用 = 会话启用 override（`/advisor on|off`）?? 持久化 `defaultEnabled`（默认 `true`；GitHub issue #124），**再与** post-gate `enabled` 取 AND——插件行在运行且 pair 齐全时，只有显式 `/advisor off` 或 `defaultEnabled: false`（且无该会话 override）会关闭会话；`defaultEnabled: false` 时 `/advisor on` 写入该会话的显式 override，只影响该会话，不改持久化配置；(3) 路由 = 会话的**完整** `modelOverride` 对 ?? 组合后的全局 advisor 对——两级之间的**半个 pair 永不拼接**；(4) 全局组合保持 用户设置 → 插件行基础值 → schema 默认值。`/advisor model set|reset` 从不改变启用开关。
+- **解析顺序（单一有效解析器）**：(1) 先校验全局配置形状（非法仍然失败关闭）；(2) 启用 = 会话启用 override（`/advisor on|off`）?? 持久化 `defaultEnabled`（默认 `true`；GitHub issue #124），**再与** post-gate `enabled` 取 AND——插件行在运行且 pair 齐全时，只有显式 `/advisor off` 或 `defaultEnabled: false`（且无该会话 override）会关闭会话；`defaultEnabled: false` 时 `/advisor on` 写入该会话的显式 override，只影响该会话，不改持久化配置；显式 `/advisor on|off` **总会记录**该会话的选择（即使与当前有效值相同），因此之后翻转 `defaultEnabled` 不会覆盖它；(3) 路由 = 会话的**完整** `modelOverride` 对 ?? 组合后的全局 advisor 对——两级之间的**半个 pair 永不拼接**；(4) 全局组合保持 用户设置 → 插件行基础值 → schema 默认值。`/advisor model set|reset` 从不改变启用开关。
 - **与 S4 门禁的关系**：显式 pair 门禁在会话解析**之后**作用于*有效*路由——全局默认缺 pair 时，完整的会话对可为该会话满足门禁；但**非法的全局配置**（未知键、坏值）无法被任何会话覆盖绕过。
 - **对校验**：缺失即继承、reset 即删除；空白/不完整对、含空白的标识符、多余字段一律拒绝；外侧空白裁剪；大小写保留。set/reset **从不**改变启用开关；`/advisor off` 保留会话对供之后 `/advisor on` 使用；钉住与今日全局默认相同的对仍然有效（保护会话免受日后默认值修改影响）。
 - **校验提交**：提交前经 app 根 LLM 服务 `resolveModelInfo(provider, model, signal)` 解析（catalog 成员资格仅是参考——手填可路由 id 允许）；查找绑定 60 秒（与运行时调用 deadline 默认一致）、可取消、**无自动重试**；失败时先前选择与运行时保持不变。

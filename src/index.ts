@@ -542,7 +542,15 @@ export function apply(ctx: Context, config: AdvisorConfig) {
    *   changed (the caller mutates `overrides` between the capture and here).
    */
   const applyRouteChange = (sessionId: string, before: ResolvedAdvisorConfig, sessionLength?: number): void => {
-    if (!effectiveEnabled(sessionId)) return
+    // A route change can CLOSE the pair gate (e.g. `/advisor model reset` on a
+    // session pinned to a valid pair while the global pair is missing): the
+    // old runtime must still be aborted and its backlog dropped — returning
+    // early here would leave it reviewing a route the switch already reports
+    // as off (GitHub issue #124 review, must-fix).
+    if (!effectiveEnabled(sessionId)) {
+      disposeRuntime(sessionId)
+      return
+    }
     const after = effectiveConfig(sessionId)
     if (after.provider === before.provider && after.model === before.model) return
     if (sessionLength !== undefined) observer.seedTo(sessionId, sessionLength)
@@ -795,13 +803,14 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // must restart a session advisor that is `quota_exhausted` (KD-5 —
       // manual resume, no auto-resume timer) or `halted` (permanent model
       // error — terminal in place, rebuilt fresh here) (qc1/qc2/qc3 W-1/I-4).
-      // The override is written only when the effective switch actually
-      // changes; enabling an already-effectively-enabled session still routes
-      // through the recovery path below instead of early-returning.
-      const already = effectiveEnabled(sessionId) === enabled
-      if (!already) overrides.set(sessionId, enabled)
+      // An explicit `/advisor on|off` ALWAYS records the session's choice —
+      // even when the effective switch already matches — so a later
+      // `defaultEnabled` flip cannot silently override an explicit decision
+      // (GitHub issue #124 review, should-fix). The runtime decision below is
+      // separate: stop on off, start/recover on on.
+      overrides.set(sessionId, enabled)
       if (!enabled) {
-        if (!already) disposeRuntime(sessionId)
+        disposeRuntime(sessionId)
         return
       }
       // enabled (newly or already): KD-5 seed — no full-history replay of
