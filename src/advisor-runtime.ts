@@ -125,11 +125,11 @@ export interface AdvisorRuntimeOptions {
   /**
    * Owning conversation's session id. Every advisor request carries it so
    * provider-level routing headers keyed on the conversation are emitted
-   * (OpenCode / OpenCode Go reject requests without `x-opencode-session`);
-   * when absent the option is omitted, leaving providers that do not need it
-   * untouched.
+   * (OpenCode / OpenCode Go reject requests without `x-opencode-session`).
+   * Required: a runtime always reviews one conversation, and the only
+   * construction site is the per-session `ensureRuntime` in `index.ts`.
    */
-  readonly sessionId?: SessionId
+  readonly sessionId: SessionId
   /** System prompt sent with every advisor call (config override or KD-2 default). */
   readonly systemPrompt: string
   /** Backoff for the single transient retry (KD-5); default 1000ms. */
@@ -442,7 +442,7 @@ export class AdvisorRuntime {
   private readonly provider: string
   private readonly model: string
   /** Owning conversation's session id; see {@link AdvisorRuntimeOptions.sessionId}. */
-  private readonly sessionId: SessionId | undefined
+  private readonly sessionId: SessionId
   private readonly systemPrompt: string
   private readonly proseFallback: boolean
   /** Configured effort id, normalized: `undefined` = automatic (smallest declared). */
@@ -911,8 +911,8 @@ export class AdvisorRuntime {
       // The conversation this review belongs to. Providers that route per
       // conversation on a request header — OpenCode Go's `x-opencode-session`
       // — refuse a request without it, so the advisor call carries the owning
-      // session id; omitting it keeps header-free providers byte-identical.
-      ...(this.sessionId === undefined ? {} : { sessionId: this.sessionId }),
+      // session id.
+      sessionId: this.sessionId,
       messages: [createUserMessage({
         content: [{ type: 'text', text: delta.markdown }],
         source: { kind: 'user' },
