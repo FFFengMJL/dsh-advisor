@@ -808,14 +808,22 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // `defaultEnabled` flip cannot silently override an explicit decision
       // (GitHub issue #124 review, should-fix). The runtime decision below is
       // separate: stop on off, start/recover on on.
+      const wasOn = effectiveEnabled(sessionId)
       overrides.set(sessionId, enabled)
       if (!enabled) {
         disposeRuntime(sessionId)
         return
       }
-      // enabled (newly or already): KD-5 seed — no full-history replay of
-      // deltas that predate (or occurred while paused/halted under) the enable.
-      if (sessionLength !== undefined) observer.seedTo(sessionId, sessionLength)
+      // KD-5 seed — skip the pre-enable history, so an off→on transition (or a
+      // halted/quota recovery) does not replay prior deltas. An IDEMPOTENT
+      // `/advisor on` must NOT re-seed: `seedTo` resets the session renderer
+      // (cursor + fold state), which would drop the context the next delta is
+      // built from. `!wasOn` is the actual off→on transition; `recovering`
+      // keeps the KD-5 seed for the halted/quota restart path.
+      const current = runtimes.get(sessionId)
+      const recovering = current !== undefined
+        && (current.status() === 'halted' || current.status() === 'quota_exhausted')
+      if ((!wasOn || recovering) && sessionLength !== undefined) observer.seedTo(sessionId, sessionLength)
       const runtime = ensureRuntime(sessionId)
       if (runtime === undefined) return // S4 explicit gate blocks model calls
       if (runtime.status() === 'halted') {

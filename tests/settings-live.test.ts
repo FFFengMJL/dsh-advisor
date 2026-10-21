@@ -577,6 +577,47 @@ describe('settings live re-apply — conditional runtime rebuild (qc3 W-1 / qc1 
 })
 
 // ---------------------------------------------------------------------------
+// 4d. GitHub issue #124 review: an idempotent `/advisor on` only RECORDS the
+//     session's explicit choice — it must not rebuild the runtime, abort the
+//     in-flight call, or drop the pending backlog / emission guard.
+// ---------------------------------------------------------------------------
+
+describe('settings live — idempotent /advisor on (GitHub issue #124 review)', () => {
+  it('records the explicit choice without touching the runtime: in-flight call, backlog, and guard survive', async () => {
+    // One note text for both calls: a rebuilt runtime would carry a fresh
+    // emission guard and deliver the duplicate again.
+    const note = '{"note":"same note","severity":"nit"}'
+    const gated = new GatedAdapter([...textReply(note)])
+    const { ctx, adapter } = await composeLiveHarness(
+      { provider: 'stub', model: 'stub-model' },
+      [],
+      gated,
+    )
+    const handler = await registerCommands(ctx)
+    const { agent, inject, steer } = makeFakeAgent('s1')
+    ctx.emit('agent/created', { agent, source: 'startup' })
+    const { session, log } = makeSession('s1')
+
+    // Turn 1's advisor call hangs mid-flight; turn 2's delta queues behind it.
+    gated.blockNext()
+    feed(ctx, session, log, simpleTurn(1, 'first request', 'first reply'))
+    await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
+    feed(ctx, session, log, simpleTurn(2, 'second request', 'second reply'))
+    await flush()
+
+    // Already on: the command still records the explicit true override, but
+    // the runtime/observer must be left alone.
+    const on = invokeAdvisor(handler, ' on', session)
+    expect(on.text).toContain('already on')
+
+    gated.release()
+    await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
+    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    expect(steer).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 4b. KD-I4 (issue #102): the global proseFallback runtime construction
 //     constant joins the runtime signature — an edit rebuilds the runtime
 //     through the existing volatile-update path (the immuneTurns-only
