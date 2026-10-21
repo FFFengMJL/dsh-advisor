@@ -441,7 +441,7 @@ describe('session model override — explicit gate applies AFTER session resolut
   it('resetting a pin that closes the gate aborts the old runtime (GitHub issue #124 must-fix)', async () => {
     const { ctx, adapter, entry, handler, agents } = await composeOverrideHarness(
       {}, // pairless global: the session pin is what satisfies the gate
-      [textReply('{"note":"pinned","severity":"nit"}'), textReply('{"note":"after repair","severity":"nit"}')],
+      [textReply('pinned'), textReply('after repair')],
     )
     const { inject } = publishAgent(ctx, agents, 's1')
     const { session, log } = makeSession('s1')
